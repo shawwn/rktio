@@ -9,3 +9,5 @@
 Makefile
 rktio_config.h
 _zuo*
+*.log
+*.status
