@@ -13,3 +13,4 @@
 /*.status
 /*.a
 /rktio_demo
+__pycache__
