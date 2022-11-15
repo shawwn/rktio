@@ -1,3 +1,5 @@
+.PHONY: all test clean via_zuo
+
 # The intent is that "main.zuo" is used, which consults "Makefile"
 # just for the configuration at the start here. But we keep a simple
 # makefile with targets around, just in case it's useful.
@@ -58,15 +60,24 @@ OBJS = rktio_fs.@LTO@ \
        rktio_console.@LTO@ \
        rktio_main.@LTO@
 
-via_zuo:
+all: rktio_demo librktio.a librktio.@LIBSFX@
+
+test: all
+	@./rktio_demo -v
+
+via_zuo: all
 	zuo $(srcdir)
 
-librktio.@LTA@: $(OBJS)
-	$(STATIC_AR) $(ARFLAGS) @HIDE_NOT_STANDALONE@librktio.@LTA@ $(OBJS)
+librktio.a: $(OBJS)
+	#$(STATIC_AR) $(ARFLAGS) @HIDE_NOT_STANDALONE@librktio.@LTA@ $(OBJS)
+	$(STATIC_AR) $(ARFLAGS) -r librktio.a $(OBJS)
 
 # Builds a shared object; requires `configure --enable-standalone`
 librktio.@LIBSFX@: $(OBJS)
 	$(AR) librktio.@LIBSFX@ $(OBJS) $(LDFLAGS) $(LIBS)
+
+rktio_demo: $(OBJS) demo.o
+	$(CC) -o rktio_demo $(OBJS) demo.o $(LDFLAGS) $(LIBS)
 
 rktio_fs.@LTO@: $(srcdir)/rktio_fs.c $(RKTIO_HEADERS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -I$(srcdir) -I. -o rktio_fs.@LTO@ -c $(srcdir)/rktio_fs.c
@@ -150,4 +161,4 @@ demo.@LTO@: $(srcdir)/demo.c $(RKTIO_HEADERS)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -I$(srcdir) -I. -o demo.@LTO@ -c $(srcdir)/demo.c
 
 clean:
-	rm -f $(OBJS) librktio.@LTA@ rktio_demo demo_fifo
+	rm -f $(OBJS) librktio.@LTA@ librktio.a rktio_demo demo_fifo
