@@ -5,9 +5,11 @@
 /test1
 *.o
 /demo
-*.dylib
-Makefile
-rktio_config.h
-_zuo*
-*.log
-*.status
+/*.dylib
+/Makefile
+/rktio_config.h
+/_zuo*
+/*.log
+/*.status
+/*.a
+/rktio_demo
