@@ -2561,8 +2561,9 @@ class RktioDirectoryList(CParameter):
     return super().__bool__()
 
   def dispose(self):
-    if self:
-      rktio_directory_list_stop(self._rktio, self)
+    # this was crashing on process exit; skip for now.
+    # if self:
+    #   rktio_directory_list_stop(self._rktio, self)
     super().dispose()
 
 #RKTIO_EXTERN rktio_directory_list_t *rktio_directory_list_start(rktio_t *rktio, rktio_const_string_t dirname);
@@ -2594,6 +2595,9 @@ def rktio_directory_list_step(rktio, dl):
   if not out:
     # dl is now deallocated; ensure its pointer is removed.
     detach(dl, RktioDirectoryList)
+    if dl:
+      # dl shouldn't be valid after detach
+      breakpoint()
   else:
     return _os.fsdecode(out)
 
