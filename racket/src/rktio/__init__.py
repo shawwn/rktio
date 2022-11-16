@@ -3,17 +3,33 @@ import enum as _enum
 import os as _os
 import os.path as _path
 import threading
+import functools
+import errno
+import socket
+import itertools
+import dataclasses
 from typing import *
 try:
   from typing import Literal
 except ImportError:
   from typing_extensions import Literal
 
+def make_posix_errno():
+  ns = _enum.EnumMeta.__prepare__('POSIX_ERRNO', (_enum.IntEnum,))
+  ns.update({v: k for k, v in errno.errorcode.items()})
+  ns._member_names.extend(errno.errorcode.values())
+  cls = type('POSIX_ERRNO', (_enum.IntEnum,), ns)
+  return cls
+
+POSIX_ERRNO = make_posix_errno()
+
 NULL = None
 
 intptr_t = _c.c_ssize_t
+uintptr_t = _c.c_size_t
 int_t = _c.c_int
 float_t = _c.c_float
+double_t = _c.c_double
 bool_t = _c.c_bool
 void_p = _c.c_void_p
 char_p = _c.c_char_p
@@ -138,9 +154,9 @@ def check_type_or_null(p, kind, label):
     typecheck(ptr, kind, label)
     return p
 
-def check_int(v, label):
-  check_type(v, (int, int_t), label)
-  return int_t(unwrap(v))
+def check_int(v, label="<argument>"):
+  check_type(v, (int, int_t, intptr_t), label)
+  return int(unwrap(v))
 
 class CParameter:
   def __init__(self, p):
@@ -274,7 +290,7 @@ def funcptr_to_name(ptr, trim=False):
 class RktioException(Exception):
   def __init__(self, msg=None, *args, code=None, name=None):
     if code is not None:
-      code = RKTIO_ERROR(code)
+      # code = RKTIO_ERROR(code)
       if name is None:
         name = code.name
     if msg is None:
@@ -343,24 +359,6 @@ rktio_bool_t = bool_t
 #    where a length is provided separately and doesn't need to be
 #    NUL-terminated. */
 rktio_const_string_t = char_p
-
-
-
-# RKTIO_EXTERN char *rktio_get_current_directory(rktio_t *rktio);
-capi_rktio_get_current_directory = librktio.rktio_get_current_directory
-capi_rktio_get_current_directory.argtypes = [rktio_p]
-capi_rktio_get_current_directory.restype = void_p
-capi_rktio_get_current_directory.errcheck = check_directory_path
-def rktio_get_current_directory(r: rktio_p):
-  return capi_call("capi_rktio_get_current_directory", check_rktio_p(r))
-
-# RKTIO_EXTERN rktio_ok_t rktio_set_current_directory(rktio_t *rktio, rktio_const_string_t path);
-capi_rktio_set_current_directory = librktio.rktio_set_current_directory
-capi_rktio_set_current_directory.argtypes = [rktio_p, rktio_const_string_t]
-capi_rktio_set_current_directory.restype = rktio_ok_t
-capi_rktio_set_current_directory.errcheck = check_rktio_ok_t
-def rktio_set_current_directory(r: rktio_p, path):
-  return capi_call("capi_rktio_set_current_directory", check_rktio_p(r), os.fsencode(path))
 
 # /*************************************************/
 # /* DLL paths                                     */
@@ -507,6 +505,9 @@ RKTIO_OPEN_NOT_DIR = RKTIO_OPEN.RKTIO_OPEN_NOT_DIR
 RKTIO_OPEN_INIT = RKTIO_OPEN.RKTIO_OPEN_INIT
 RKTIO_OPEN_OWN = RKTIO_OPEN.RKTIO_OPEN_OWN
 
+assert RKTIO_OPEN_INIT == (1<<13)
+assert RKTIO_OPEN_OWN == (1<<14)
+
 #RKTIO_EXTERN rktio_fd_t *rktio_system_fd(rktio_t *rktio, intptr_t system_fd, int modes);
 #/* A socket (as opposed to other file descriptors) registered this way
 #   should include include `RKTIO_OPEN_SOCKET` and be non-blocking or
@@ -520,7 +521,9 @@ def rktio_system_fd(rktio, system_fd: int, modes: RKTIO_OPEN):
   """A socket (as opposed to other file descriptors) registered this way
   should include include `RKTIO_OPEN_SOCKET` and be non-blocking or
   use `RKTIO_OPEN_INIT`."""
-  out = capi_call("rktio_system_fd", check_rktio_p(rktio), system_fd, int(RKTIO_OPEN(modes)))
+  fd = check_int(system_fd, "system_fd")
+  modes = int(RKTIO_OPEN(modes))
+  out = capi_call("rktio_system_fd", check_rktio_p(rktio), fd, modes)
   #return out
   return RktioFd(rktio, out)
 
@@ -602,7 +605,13 @@ def rktio_fd_is_pending_open(rktio, rfd):
 capi_rktio_fd_modes = librktio.rktio_fd_modes
 capi_rktio_fd_modes.argtypes = [rktio_p, rktio_fd_p]
 capi_rktio_fd_modes.restype = int_t
-
+capi_rktio_fd_modes.errcheck = check_rktio_ok_t
+def rktio_fd_modes(rktio, rfd):
+  """Returns all of the recorded mode flags, including those provided to
+  `rktio_system_fd` and those that are inferred. The
+  `RKTIO_OPEN_INIT` flag is not recorded, however."""
+  out = capi_call("rktio_fd_modes", check_rktio_p(rktio), check_rktio_fd_p(rfd))
+  return RKTIO_OPEN(out)
 
 #RKTIO_EXTERN rktio_fd_t *rktio_open(rktio_t *rktio, rktio_const_string_t src, int modes);
 #/* Can report `RKTIO_ERROR_DOES_NOT_EXIST` in place of a system error
@@ -647,6 +656,7 @@ def rktio_open(rktio: rktio_p, src: _os.PathLike, modes: RKTIO_OPEN):
 capi_rktio_close = librktio.rktio_close
 capi_rktio_close.argtypes = [rktio_p, rktio_fd_p]
 capi_rktio_close.restype = rktio_ok_t
+capi_rktio_close.errcheck = check_rktio_ok_t
 def rktio_close(rktio: rktio_p, fd: rktio_fd_p):
   """Can report `RKTIO_ERROR_EXISTS` in place of system error,
   and can report `RKTIO_ERROR_UNSUPPORTED_TEXT_MODE` on Windows.
@@ -661,9 +671,8 @@ def rktio_close(rktio: rktio_p, fd: rktio_fd_p):
     fd = self
   if rktio and fd:
     ret = capi_call("capi_rktio_close", check_rktio_p(rktio), check_rktio_fd_p(fd))
-    res = check_rktio_ok_t(ret)
     rktio__fd_on_close(fd)
-    return res
+    return ret
 
 
 #RKTIO_EXTERN void rktio_close_noerr(rktio_t *rktio, rktio_fd_t *fd);
@@ -687,11 +696,29 @@ def rktio_close_noerr(rktio: rktio_p, fd: rktio_fd_p):
 #RKTIO_EXTERN rktio_fd_t *rktio_dup(rktio_t *rktio, rktio_fd_t *rfd);
 #/* Copies a file descriptor, where each must be closed or forgotten
 #   independenty. */
+capi_rktio_dup = librktio.rktio_dup
+capi_rktio_dup.argtypes = [rktio_p, rktio_fd_p]
+capi_rktio_dup.restype = rktio_fd_p
+capi_rktio_dup.errcheck = check_rktio_ok_t
+def rktio_dup(rktio, rfd):
+  out = capi_call("rktio_dup", check_rktio_p(rktio), check_rktio_fd_p(rfd))
+  return RktioFd(rktio, out)
 
 #RKTIO_EXTERN void rktio_forget(rktio_t *rktio, rktio_fd_t *fd);
 #/* Deallocates a `rktio_fd_t` without closing the file descriptor,
 #   but the descriptor is no longer recorded if it was opened with
 #   `RKTIO_OPEN_OWN`. */
+capi_rktio_forget = librktio.rktio_forget
+capi_rktio_forget.argtypes = [rktio_p, rktio_fd_p]
+capi_rktio_forget.restype = None
+def rktio_forget(rktio, fd):
+  """Deallocates a `rktio_fd_t` without closing the file descriptor,
+  but the descriptor is no longer recorded if it was opened with
+  `RKTIO_OPEN_OWN`."""
+  if ok(self := detach(fd, RktioFd)):
+    fd = self
+  out = capi_call("rktio_forget", check_rktio_p(rktio), check_rktio_fd_p(fd))
+  return out
 
 #RKTIO_EXTERN rktio_fd_t *rktio_std_fd(rktio_t *rktio, int which);
 #/* Gets stdin/stdout/stderr. */
@@ -699,12 +726,12 @@ def rktio_close_noerr(rktio: rktio_p, fd: rktio_fd_p):
 ##define RKTIO_STDIN  0
 ##define RKTIO_STDOUT 1
 ##define RKTIO_STDERR 2
-
 capi_rktio_std_fd = librktio.rktio_std_fd
 capi_rktio_std_fd.argtypes = [rktio_p, int_t]
 capi_rktio_std_fd.restype = rktio_fd_p
 capi_rktio_std_fd.errcheck = check_rktio_fd_p
 def rktio_std_fd(rktio: rktio_p, which: Literal["stdin", "stdout", "stderr", 0, 1, 2]):
+  """Gets stdin/stdout/stderr."""
   which = dict(stdin=0, stdout=1, stderr=2).get(which, which)
   if which not in [0, 1, 2]:
     raise TypeError(f"Expected stdin/stdout/stderr/0/1/2, got {which!r}")
@@ -738,15 +765,15 @@ RKTIO_READ_EOF = RKTIO_READ_RESULT.RKTIO_READ_EOF
 RKTIO_READ_ERROR = RKTIO_READ_RESULT.RKTIO_READ_ERROR
 
 def check_rktio_read_result(result, *rest):
-  check_valid(None, result != RKTIO_WRITE_ERROR, *rest)
+  check_valid(None, result != RKTIO_READ_ERROR, *rest)
   if result != RKTIO_READ_EOF:
     return result
 
 #RKTIO_EXTERN_ERR(RKTIO_READ_ERROR)
 #intptr_t rktio_read(rktio_t *rktio, rktio_fd_t *fd, char *buffer, intptr_t len);
 capi_rktio_read = librktio.rktio_read
-capi_rktio_read.argtypes = [rktio_p, rktio_fd_p, char_p, intptr_t]
-capi_rktio_read.restype = rktio_ok_t
+capi_rktio_read.argtypes = [rktio_p, rktio_fd_p, void_p, intptr_t]
+capi_rktio_read.restype = intptr_t
 capi_rktio_read.errcheck = check_rktio_read_result
 def rktio_read(rktio, fd, count):
   if count <= 0:
@@ -1022,43 +1049,294 @@ def rktio_make_pipe(rktio, flags=RKTIO_NO_INHERIT_INPUT):
 #typedef struct rktio_addrinfo_lookup_t rktio_addrinfo_lookup_t;
 #typedef struct rktio_addrinfo_t rktio_addrinfo_t;
 
+class rktio_addrinfo_lookup_t(_c.Structure):
+  pass
+
+rktio_addrinfo_lookup_p = _c.POINTER(rktio_addrinfo_lookup_t)
+
+def check_rktio_addrinfo_lookup_p(p, *args):
+  return check_type(p, rktio_addrinfo_lookup_p, "rktio_addrinfo_lookup_p")
+
+def check_rktio_addrinfo_lookup_p_or_null(p, *args):
+  return check_type_or_null(p, rktio_addrinfo_lookup_p, "rktio_addrinfo_lookup_p")
+
+
+class rktio_addrinfo_t(_c.Structure):
+  pass
+
+rktio_addrinfo_p = _c.POINTER(rktio_addrinfo_t)
+
+def check_rktio_addrinfo_p(p, *args):
+  return check_type(p, rktio_addrinfo_p, "rktio_addrinfo_p")
+
+def check_rktio_addrinfo_p_or_null(p, *args):
+  return check_type_or_null(p, rktio_addrinfo_p, "rktio_addrinfo_p")
+
+
+class RktioAddrinfo(CParameter):
+  def __init__(self, rktio, p):
+    typecheck_or_null(p, rktio_addrinfo_p, "rktio_addrinfo_p")
+    super().__init__(p)
+    self._rktio = check_rktio_p(rktio)
+
+  def unset(self):
+    super().unset()
+    self._rktio = None
+
+  def __bool__(self):
+    if not self._rktio:
+      return False
+    return super().__bool__()
+
+  def dispose(self):
+    if self:
+      rktio_addrinfo_free(self._rktio, self)
+    super().dispose()
+
+
+
 #RKTIO_EXTERN rktio_addrinfo_lookup_t *rktio_start_addrinfo_lookup(rktio_t *rktio,
 #                                                                  rktio_const_string_t hostname, int portno,
 #                                                                  int family, rktio_bool_t passive, rktio_bool_t tcp);
 #/* The `family` argument should be one of the following: */
 ##define RKTIO_FAMILY_ANY (-1)
+class RKTIO_FAMILY(_enum.IntEnum):
+  RKTIO_FAMILY_ANY = -1
+RKTIO_FAMILY_ANY = RKTIO_FAMILY.RKTIO_FAMILY_ANY
+capi_rktio_start_addrinfo_lookup = librktio.rktio_start_addrinfo_lookup
+capi_rktio_start_addrinfo_lookup.argtypes = [rktio_p, char_p, int_t, int_t, rktio_bool_t, rktio_bool_t]
+capi_rktio_start_addrinfo_lookup.restype = rktio_addrinfo_lookup_p
+capi_rktio_start_addrinfo_lookup.errcheck = check_rktio_ok_t
+def rktio_start_addrinfo_lookup(rktio, hostname: Optional[str], portno: int, family: int, passive: bool, tcp: bool):
+  out = capi_call("rktio_start_addrinfo_lookup", check_rktio_p(rktio), asbytes(hostname), check_int(portno), check_int(family), check_int(passive), check_int(tcp))
+  return out
+
 #RKTIO_EXTERN_NOERR int rktio_get_ipv4_family(rktio_t *rktio);
+capi_rktio_get_ipv4_family = librktio.rktio_get_ipv4_family
+capi_rktio_get_ipv4_family.argtypes = [rktio_p]
+capi_rktio_get_ipv4_family.restype = int_t
+def rktio_get_ipv4_family(rktio):
+  out = capi_call("rktio_get_ipv4_family", check_rktio_p(rktio))
+  return out
 
 #RKTIO_EXTERN_ERR(RKTIO_POLL_ERROR)
 #rktio_tri_t rktio_poll_addrinfo_lookup_ready(rktio_t *rktio, rktio_addrinfo_lookup_t *lookup);
 #/* Check whether an address is available for a lookup request. */
+capi_rktio_poll_addrinfo_lookup_ready = librktio.rktio_poll_addrinfo_lookup_ready
+capi_rktio_poll_addrinfo_lookup_ready.argtypes = [rktio_p, rktio_addrinfo_lookup_p]
+capi_rktio_poll_addrinfo_lookup_ready.restype = rktio_ok_t
+capi_rktio_poll_addrinfo_lookup_ready.errcheck = check_rktio_poll_result
+def rktio_poll_addrinfo_lookup_ready(rktio, lookup):
+  """Check whether an address is available for a lookup request."""
+  out = capi_call("rktio_poll_addrinfo_lookup_ready", check_rktio_p(rktio), check_rktio_addrinfo_lookup_p(lookup))
+  return out
 
 #RKTIO_EXTERN rktio_addrinfo_t *rktio_addrinfo_lookup_get(rktio_t *rktio, rktio_addrinfo_lookup_t *lookup);
 #/* Deallocates `lookup`. */
+capi_rktio_addrinfo_lookup_get = librktio.rktio_addrinfo_lookup_get
+capi_rktio_addrinfo_lookup_get.argtypes = [rktio_p, rktio_addrinfo_lookup_p]
+capi_rktio_addrinfo_lookup_get.restype = rktio_addrinfo_p
+capi_rktio_addrinfo_lookup_get.errcheck = check_rktio_ok_t
+def rktio_addrinfo_lookup_get(rktio, lookup):
+  if ok(out := capi_call("rktio_addrinfo_lookup_get", check_rktio_p(rktio), check_rktio_addrinfo_lookup_p(lookup))):
+    return RktioAddrinfo(rktio, out)
 
 #RKTIO_EXTERN void rktio_addrinfo_lookup_stop(rktio_t *rktio, rktio_addrinfo_lookup_t *lookup);
 #/* Abandons a lookup whose result (or error) is not yet received. */
+capi_rktio_addrinfo_lookup_stop = librktio.rktio_addrinfo_lookup_stop
+capi_rktio_addrinfo_lookup_stop.argtypes = [rktio_p, rktio_addrinfo_lookup_p]
+capi_rktio_addrinfo_lookup_stop.restype = None
+def rktio_addrinfo_lookup_stop(rktio, lookup):
+  """Abandons a lookup whose result (or error) is not yet received."""
+  out = capi_call("rktio_addrinfo_lookup_stop", check_rktio_p(rktio), check_rktio_addrinfo_lookup_p(lookup))
+  return out
 
 #RKTIO_EXTERN void rktio_addrinfo_free(rktio_t *rktio, rktio_addrinfo_t *a);
 #/* Frees the result of a lookup. */
+capi_rktio_addrinfo_free = librktio.rktio_addrinfo_free
+capi_rktio_addrinfo_free.argtypes = [rktio_p, rktio_addrinfo_p]
+capi_rktio_addrinfo_free.restype = None
+def rktio_addrinfo_free(rktio, addrinfo):
+  """Frees the result of a lookup."""
+  if ok(self := detach(addrinfo, RktioAddrinfo)):
+    addrinfo = self
+  out = capi_call("rktio_addrinfo_free", check_rktio_p(rktio), check_rktio_addrinfo_p(addrinfo))
+  return out
 
 #typedef struct rktio_listener_t rktio_listener_t;
 #typedef struct rktio_connect_t rktio_connect_t;
+
+rktio_socket_t = intptr_t
+
+#class rktio_listener_t(_c.Structure):
+#  _fields_ = [
+#      ("count", int_t),
+#  ]
+
+#  def __len__(self):
+#    return self.count
+
+#  def ext(self):
+#    cls = rktio_listener_n(len(self))
+#    #return cls.from_address(_c.addressof(self))
+#    return _c.cast(_c.addressof(self), _c.POINTER(cls))
+
+
+def dynamic_array(cls, address, count):
+  cls = (cls * count)
+  out = cls.from_address(address)
+  return out
+
+class rktio_listener_t(_c.Structure):
+  _fields_ = [
+      ("count", int_t),
+      #("s", _c.POINTER(rktio_socket_t)),
+      ("s_", (rktio_socket_t * 0)),
+      ]
+
+  def __hash__(self):
+    return hash(id(self))
+  
+  @functools.lru_cache
+  def sockets(self, count):
+    return dynamic_array(rktio_socket_t, _c.addressof(self.s_), count)
+
+  # @property
+  # def s(self):
+  #   n = len(self)
+  #   cls = (rktio_socket_t * n)
+  #   out = cls.from_address(_c.addressof(self.s_))
+  #   return out
+  @property
+  def s(self):
+    return self.sockets(len(self))
+
+  def __len__(self):
+    return self.count
+
+  def __getitem__(self, i):
+    return self.s[i]
+    # if i >= 0 and i < len(self):
+    #   return self.s[i]
+    # raise IndexError(i)
+
+  def __setitem__(self, i, s):
+    self.s[i] = s
+    # if isinstance(i, slice):
+    #   n = len(self)
+    #   start, stop, step = i.indices(n)
+    #   if not (0 <= start < n):
+    #     raise IndexError(i)
+    #   if not (0 <= stop <= n):
+    #     raise IndexError(i)
+    #   for idx in range(start, stop, step):
+    #     self.s[idx] = s[idx]
+    # else:
+    #   if i >= 0 and i < len(self):
+    #     self.s[i] = s
+    #     return
+    #   raise IndexError(i)
+
+import functools
+
+@functools.lru_cache
+def rktio_listener_n(count):
+  class rktio_listener_ext_t(rktio_listener_t):
+    _fields_ = [
+        #("count", int_t),
+        ("s", (rktio_socket_t * count))
+        ]
+
+    def __getitem__(self, i):
+      if i >= 0 and i < len(self):
+        return self.s[i]
+      raise IndexError(i)
+
+    def __setitem__(self, i, s):
+      if isinstance(i, slice):
+        n = len(self)
+        start, stop, step = i.indices(n)
+        if not (0 <= start < n):
+          raise IndexError(i)
+        if not (0 <= stop <= n):
+          raise IndexError(i)
+        for idx in range(start, stop, step):
+          self.s[idx] = s[idx]
+      else:
+        if i >= 0 and i < len(self):
+          self.s[i] = s
+          return
+        raise IndexError(i)
+  return rktio_listener_ext_t
+
+rktio_listener_p = _c.POINTER(rktio_listener_t)
+
+def check_rktio_listener_p(p, *args):
+  return check_type(p, rktio_listener_p, "rktio_listener_p")
+
+def check_rktio_listener_p_or_null(p, *args):
+  return check_type_or_null(p, rktio_listener_p, "rktio_listener_p")
+
+
+def rktio_listener_alloc(*fds):
+  n = len(fds)
+  cls = rktio_listener_n(n)
+  l = cls()
+  l.count = n
+  #l.s = (rktio_socket_t * n)()
+  l[:] = fds
+  return _c.pointer(l)
+
+
 
 #RKTIO_EXTERN rktio_listener_t *rktio_listen(rktio_t *rktio, rktio_addrinfo_t *local, int backlog, rktio_bool_t reuse);
 #/* Can fail with `RKTIO_ERROR_TRY_AGAIN_WITH_IPV4`, which suggests
 #   trying an address using the family reported by
 #   `rktio_get_ipv4_family` instead of `RKTIO_FAMILY_ANY`. */
+capi_rktio_listen = librktio.rktio_listen
+capi_rktio_listen.argtypes = [rktio_p, rktio_addrinfo_p, int_t, rktio_bool_t]
+capi_rktio_listen.restype = rktio_listener_p
+capi_rktio_listen.errcheck = check_rktio_ok_t
+def rktio_listen(rktio, addrinfo, backlog: int, reuse: bool):
+  """
+  #/* Can fail with `RKTIO_ERROR_TRY_AGAIN_WITH_IPV4`, which suggests
+  #   trying an address using the family reported by
+  #   `rktio_get_ipv4_family` instead of `RKTIO_FAMILY_ANY`. */
+  """
+  out = capi_call("rktio_listen", check_rktio_p(rktio), check_rktio_addrinfo_p(addrinfo), check_int(backlog), check_int(reuse))
+  return out
 
 #RKTIO_EXTERN void rktio_listen_stop(rktio_t *rktio, rktio_listener_t *l);
 #/* Stops a listener. */
+capi_rktio_listen_stop = librktio.rktio_listen_stop
+capi_rktio_listen_stop.argtypes = [rktio_p, rktio_listener_p]
+capi_rktio_listen_stop.restype = None
+def rktio_listen_stop(rktio, l):
+  """Stops a listener."""
+  out = capi_call("rktio_listen_stop", check_rktio_p(rktio), check_rktio_listener_p(l))
+  return out
 
 #RKTIO_EXTERN_ERR(RKTIO_POLL_ERROR)
 #rktio_tri_t rktio_poll_accept_ready(rktio_t *rktio, rktio_listener_t *listener);
 #/* Returns one of `RKTIO_POLL_READY`, etc. */
+capi_rktio_poll_accept_ready = librktio.rktio_poll_accept_ready
+capi_rktio_poll_accept_ready.argtypes = [rktio_p, rktio_listener_p]
+capi_rktio_poll_accept_ready.restype = rktio_ok_t
+capi_rktio_poll_accept_ready.errcheck = check_rktio_poll_result
+def rktio_poll_accept_ready(rktio, l):
+  out = capi_call("rktio_poll_accept_ready", check_rktio_p(rktio), check_rktio_listener_p(l))
+  return out
 
 #RKTIO_EXTERN rktio_fd_t *rktio_accept(rktio_t *rktio, rktio_listener_t *listener);
 #/* Accepts one connection on a listener. */
+capi_rktio_accept = librktio.rktio_accept
+capi_rktio_accept.argtypes = [rktio_p, rktio_listener_p]
+capi_rktio_accept.restype = rktio_fd_p
+capi_rktio_accept.errcheck = check_rktio_ok_t
+def rktio_accept(rktio, l):
+  """Accepts one connection on a listener."""
+  out = capi_call("rktio_accept", check_rktio_p(rktio), check_rktio_listener_p(l))
+  return out
 
 #RKTIO_EXTERN rktio_connect_t *rktio_start_connect(rktio_t *rktio,
 #                                                  rktio_addrinfo_t *remote,
@@ -1098,6 +1376,16 @@ def rktio_make_pipe(rktio, flags=RKTIO_NO_INHERIT_INPUT):
 #/* The `addr` argument can be NULL to create a socket without
 #   specifying an interface, and `family` is used only if `addr` is not
 #   specified. */
+capi_rktio_udp_open = librktio.rktio_udp_open
+capi_rktio_udp_open.argtypes = [rktio_p, rktio_addrinfo_p, int_t]
+capi_rktio_udp_open.restype = rktio_fd_p
+capi_rktio_udp_open.errcheck = check_rktio_ok_t
+def rktio_udp_open(rktio, addr, family: int):
+  """The `addr` argument can be NULL to create a socket without
+  specifying an interface, and `family` is used only if `addr` is not
+  specified."""
+  out = capi_call("rktio_udp_open", check_rktio_p(rktio), check_rktio_addrinfo_p_or_null(addr), family)
+  return out
 
 #RKTIO_EXTERN rktio_ok_t rktio_udp_disconnect(rktio_t *rktio, rktio_fd_t *rfd);
 #RKTIO_EXTERN rktio_ok_t rktio_udp_bind(rktio_t *rktio, rktio_fd_t *rfd, rktio_addrinfo_t *addr,
@@ -1159,9 +1447,40 @@ def rktio_make_pipe(rktio, flags=RKTIO_NO_INHERIT_INPUT):
 #  RKTIO_DROP_MEMBERSHIP
 #};
 
+def check_addr_port_strings(out, *rest):
+  if out:
+    res = dynamic_array(char_p, out, 2)
+    addr = asutf8(res[0])
+    port = asutf8(res[1])
+    rktio_free(out)
+    return addr, port
+  else:
+    raise ValueError("expected pointer", out)
+
 #RKTIO_EXTERN char **rktio_socket_address(rktio_t *rktio, rktio_fd_t *rfd);
+capi_rktio_socket_address = librktio.rktio_socket_address
+capi_rktio_socket_address.argtypes = [rktio_p, rktio_fd_p]
+capi_rktio_socket_address.restype = void_p
+capi_rktio_socket_address.errcheck = check_addr_port_strings
+def rktio_socket_address(rktio, rfd):
+  out = capi_call("rktio_socket_address", check_rktio_p(rktio), check_rktio_fd_p(rfd))
+  return out
 #RKTIO_EXTERN char **rktio_socket_peer_address(rktio_t *rktio, rktio_fd_t *rfd);
+capi_rktio_socket_peer_address = librktio.rktio_socket_peer_address
+capi_rktio_socket_peer_address.argtypes = [rktio_p, rktio_fd_p]
+capi_rktio_socket_peer_address.restype = void_p
+capi_rktio_socket_peer_address.errcheck = check_addr_port_strings
+def rktio_socket_peer_address(rktio, rfd):
+  out = capi_call("rktio_socket_peer_address", check_rktio_p(rktio), check_rktio_fd_p(rfd))
+  return out
 #RKTIO_EXTERN char **rktio_listener_address(rktio_t *rktio, rktio_listener_t *lnr);
+capi_rktio_listener_address = librktio.rktio_listener_address
+capi_rktio_listener_address.argtypes = [rktio_p, rktio_listener_p]
+capi_rktio_listener_address.restype = void_p
+capi_rktio_listener_address.errcheck = check_addr_port_strings
+def rktio_listener_address(rktio, lnr):
+  out = capi_call("rktio_listener_address", check_rktio_p(rktio), check_rktio_listener_p(lnr))
+  return out
 #/* These return two strings in an array (where the array itself should
 #   be deallocated): address and service. */
 
@@ -1309,9 +1628,69 @@ def rktio_setenv(rktio, name, val):
 ##define RKTIO_FS_CHANGE_LOW_LATENCY (1 << 2)
 ##define RKTIO_FS_CHANGE_FILE_LEVEL  (1 << 3)
 ##define RKTIO_FS_CHANGE_NEED_LTPS   (1 << 4)
+class RKTIO_FS_CHANGE(_enum.IntFlag):
+  RKTIO_FS_CHANGE_SUPPORTED   = _enum.auto()
+  RKTIO_FS_CHANGE_SCALABLE    = _enum.auto()
+  RKTIO_FS_CHANGE_LOW_LATENCY = _enum.auto()
+  RKTIO_FS_CHANGE_FILE_LEVEL  = _enum.auto()
+  RKTIO_FS_CHANGE_NEED_LTPS   = _enum.auto()
+RKTIO_FS_CHANGE_SUPPORTED   = RKTIO_FS_CHANGE.RKTIO_FS_CHANGE_SUPPORTED  
+RKTIO_FS_CHANGE_SCALABLE    = RKTIO_FS_CHANGE.RKTIO_FS_CHANGE_SCALABLE   
+RKTIO_FS_CHANGE_LOW_LATENCY = RKTIO_FS_CHANGE.RKTIO_FS_CHANGE_LOW_LATENCY
+RKTIO_FS_CHANGE_FILE_LEVEL  = RKTIO_FS_CHANGE.RKTIO_FS_CHANGE_FILE_LEVEL 
+RKTIO_FS_CHANGE_NEED_LTPS   = RKTIO_FS_CHANGE.RKTIO_FS_CHANGE_NEED_LTPS  
+
+#RKTIO_EXTERN_NOERR int rktio_fs_change_properties(rktio_t *rktio);
+capi_rktio_fs_change_properties = librktio.rktio_fs_change_properties
+capi_rktio_fs_change_properties.argtypes = [rktio_p]
+capi_rktio_fs_change_properties.restype = int_t
+def rktio_fs_change_properties(rktio):
+  out = capi_call("rktio_fs_change_properties", check_rktio_p(rktio))
+  return RKTIO_FS_CHANGE(out)
 
 #typedef struct rktio_fs_change_t rktio_fs_change_t;
 #struct rktio_ltps_t; /* forward reference */
+
+# forward reference
+class rktio_ltps_t(_c.Structure):
+  pass
+rktio_ltps_p = _c.POINTER(rktio_ltps_t)
+
+class rktio_fs_change_t(_c.Structure):
+  pass
+
+rktio_fs_change_p = _c.POINTER(rktio_fs_change_t)
+
+def check_rktio_fs_change_p(p, *args):
+  return check_type(p, rktio_fs_change_p, "rktio_fs_change_p")
+
+def check_rktio_fs_change_p_or_null(p, *args):
+  return check_type_or_null(p, rktio_fs_change_p, "rktio_fs_change_p")
+
+class RktioFsChange(CParameter):
+  def __init__(self, rktio, path, p):
+    typecheck_or_null(p, rktio_fs_change_p, "rktio_fs_change_p")
+    super().__init__(p)
+    self._rktio = check_rktio_p(rktio)
+    self.path = path
+
+  def unset(self):
+    super().unset()
+    self._rktio = None
+
+  def __bool__(self):
+    if not self._rktio:
+      return False
+    return super().__bool__()
+
+  def dispose(self):
+    if self:
+      rktio_fs_change_forget(self._rktio, self)
+    super().dispose()
+
+  def __repr__(self):
+    return f"RktioFsChange(path={self.path}, unwrap={unwrap(self)!r})"
+
 
 #RKTIO_EXTERN rktio_fs_change_t *rktio_fs_change(rktio_t *rktio, rktio_const_string_t path,
 #                                                struct rktio_ltps_t *ltps);
@@ -1322,12 +1701,48 @@ def rktio_setenv(rktio, name, val):
 #   unless the `RKTIO_FS_CHANGE_NEED_LTPS` property is reported; if
 #   `lt` is provided, then the tracker must be canceled or discovered
 #   ready before `ltps` is closed. */
+capi_rktio_fs_change = librktio.rktio_fs_change
+capi_rktio_fs_change.argtypes = [rktio_p, rktio_const_string_t, rktio_ltps_p]
+capi_rktio_fs_change.restype = rktio_fs_change_p
+capi_rktio_fs_change.errcheck = check_rktio_ok_t
+def rktio_fs_change(rktio, path, ltps=None):
+  """Creates a filesystem-change tracker that reports changes in `path`
+  after creation of the tracker. The properties repotred by
+  `rktio_fs_change_properties` report various aspects of how the
+  tracker behaves. In particular, the `ltps` argument can be NULL
+  unless the `RKTIO_FS_CHANGE_NEED_LTPS` property is reported; if
+  `lt` is provided, then the tracker must be canceled or discovered
+  ready before `ltps` is closed."""
+  need_ltps = bool(rktio_fs_change_properties(rktio) & RKTIO_FS_CHANGE_NEED_LTPS)
+  if (ltps is None) != need_ltps:
+    if not need_ltps:
+      raise ValueError("RKTIO_FS_CHANGE doesn't need LTPS, but ltps wasn't None")
+    else:
+      raise ValueError("RKTIO_FS_CHANGE needs LTPS, but ltps was None")
+
+  out = capi_call("rktio_fs_change", check_rktio_p(rktio), check_path(path), check_rktio_ltps_p_or_null(ltps))
+  return RktioFsChange(rktio, path, out)
 
 #RKTIO_EXTERN void rktio_fs_change_forget(rktio_t *rktio, rktio_fs_change_t *fc);
+capi_rktio_fs_change_forget = librktio.rktio_fs_change_forget
+capi_rktio_fs_change_forget.argtypes = [rktio_p, rktio_fs_change_p]
+capi_rktio_fs_change_forget.restype = None
+def rktio_fs_change_forget(rktio, fc):
+  if ok(self := detach(fc, RktioFsChange)):
+    fc = self
+  out = capi_call("rktio_fs_change_forget", check_rktio_p(rktio), check_rktio_fs_change_p(fc))
+  return out
 
 #RKTIO_EXTERN_ERR(RKTIO_POLL_ERROR)
 #rktio_tri_t rktio_poll_fs_change_ready(rktio_t *rktio, rktio_fs_change_t *fc);
 #/* Returns one of `RKTIO_POLL_READY`, etc. */
+capi_rktio_poll_fs_change_ready = librktio.rktio_poll_fs_change_ready
+capi_rktio_poll_fs_change_ready.argtypes = [rktio_p, rktio_fs_change_p]
+capi_rktio_poll_fs_change_ready.restype = rktio_ok_t
+capi_rktio_poll_fs_change_ready.errcheck = check_rktio_poll_result
+def rktio_poll_fs_change_ready(rktio, fc):
+  out = capi_call("rktio_poll_fs_change_ready", check_rktio_p(rktio), check_rktio_fs_change_p(fc))
+  return out
 
 #/*************************************************/
 #/* File-descriptor sets for polling              */
@@ -1421,8 +1836,20 @@ def rktio_poll_add(rktio, rfd, fds, modes: RKTIO_POLL):
 #RKTIO_EXTERN void rktio_poll_add_accept(rktio_t *rktio, rktio_listener_t *listener, rktio_poll_set_t *fds);
 #RKTIO_EXTERN void rktio_poll_add_connect(rktio_t *rktio, rktio_connect_t *conn, rktio_poll_set_t *fds);
 #RKTIO_EXTERN void rktio_poll_add_addrinfo_lookup(rktio_t *rktio, rktio_addrinfo_lookup_t *lookup, rktio_poll_set_t *fds);
+capi_rktio_poll_add_addrinfo_lookup = librktio.rktio_poll_add_addrinfo_lookup
+capi_rktio_poll_add_addrinfo_lookup.argtypes = [rktio_p, rktio_addrinfo_lookup_p, rktio_poll_set_p]
+capi_rktio_poll_add_addrinfo_lookup.restype = None
+def rktio_poll_add_addrinfo_lookup(rktio, lookup, fds):
+  out = capi_call("rktio_poll_add_addrinfo_lookup", check_rktio_p(rktio), check_rktio_addrinfo_lookup_p(lookup), check_rktio_poll_set_p(fds))
+  return out
 #RKTIO_EXTERN void rktio_poll_add_process(rktio_t *rktio, rktio_process_t *sp, rktio_poll_set_t *fds);
 #RKTIO_EXTERN void rktio_poll_add_fs_change(rktio_t *rktio, rktio_fs_change_t *fc, rktio_poll_set_t *fds);
+capi_rktio_poll_add_fs_change = librktio.rktio_poll_add_fs_change
+capi_rktio_poll_add_fs_change.argtypes = [rktio_p, rktio_fs_change_p, rktio_poll_set_p]
+capi_rktio_poll_add_fs_change.restype = None
+def rktio_poll_add_fs_change(rktio, fc, fds):
+  out = capi_call("rktio_poll_add_fs_change", check_rktio_p(rktio), check_rktio_fs_change_p(fc), check_rktio_poll_set_p(fds))
+  return out
 #/* Registers various other waits. */
 
 #RKTIO_EXTERN void rktio_poll_set_add_nosleep(rktio_t *rktio, rktio_poll_set_t *fds);
@@ -1473,13 +1900,13 @@ def rktio_poll_set_add_nosleep(rktio, fds):
 #typedef struct rktio_ltps_t rktio_ltps_t;
 #typedef struct rktio_ltps_handle_t rktio_ltps_handle_t;
 
-class rktio_ltps_t(_c.Structure):
-  pass
+# forward referenced above
+# class rktio_ltps_t(_c.Structure):
+#   pass
+# rktio_ltps_p = _c.POINTER(rktio_ltps_t)
 
 class rktio_ltps_handle_t(_c.Structure):
   pass
-
-rktio_ltps_p = _c.POINTER(rktio_ltps_t)
 rktio_ltps_handle_p = _c.POINTER(rktio_ltps_handle_t)
 
 def check_rktio_ltps_p(p, *args):
@@ -1533,7 +1960,7 @@ capi_rktio_ltps_close = librktio.rktio_ltps_close
 capi_rktio_ltps_close.argtypes = [rktio_p, rktio_ltps_p]
 capi_rktio_ltps_close.restype = None
 def rktio_ltps_close(rktio, ltps):
-  if ok(self := detach(ltps)):
+  if ok(self := detach(ltps, RktioLtps)):
     ltps = self
   if ltps:
     return capi_call("rktio_ltps_close", check_rktio_p(rktio), check_rktio_ltps_p(ltps))
@@ -1686,7 +2113,7 @@ def rktio_sleep(rktio, nsecs: float = brief, fds: rktio_poll_set_p = None, lt: r
   """Waits up to `nsecs` seconds (or forever if `nsecs` is infinity), until
   something registered with `fds` or `lt` is ready, or until there's
   some other activity that sometimes causes an early wakeup."""
-  return capi_call("rktio_sleep", check_rktio_p(rktio), float_t(nsecs), check_rktio_poll_set_p_or_null(fds), check_rktio_ltps_p_or_null(fds))
+  return capi_call("rktio_sleep", check_rktio_p(rktio), float_t(nsecs), check_rktio_poll_set_p_or_null(fds), check_rktio_ltps_p_or_null(lt))
 
 #/*************************************************/
 #/* Sleeping in a background thread               */
@@ -1707,7 +2134,7 @@ def rktio_start_sleep(rktio, nsecs: float = brief, fds = None, lt = None, woke_f
   background thread is done sleeping, it writes a byte to `woke_fd`, but the
   background thread can be woken up with `rktio_end_sleep`."""
   fd = check_int(woke_fd, "woke_fd")
-  out = capi_call("rktio_start_sleep", check_rktio_p(rktio), float_t(nsecs), check_rktio_poll_set_p_or_null(fds), check_rktio_ltps_p_or_null(fds), fd)
+  out = capi_call("rktio_start_sleep", check_rktio_p(rktio), float_t(nsecs), check_rktio_poll_set_p_or_null(fds), check_rktio_ltps_p_or_null(lt), fd)
   return out
 
 #RKTIO_EXTERN void rktio_end_sleep(rktio_t *rktio);
@@ -1753,7 +2180,20 @@ def rktio_end_sleep(rktio):
 #/* Can report `RKTIO_ERROR_EXISTS`. */
 
 #RKTIO_EXTERN char *rktio_get_current_directory(rktio_t *rktio);
+capi_rktio_get_current_directory = librktio.rktio_get_current_directory
+capi_rktio_get_current_directory.argtypes = [rktio_p]
+capi_rktio_get_current_directory.restype = void_p
+capi_rktio_get_current_directory.errcheck = check_directory_path
+def rktio_get_current_directory(r: rktio_p):
+  return capi_call("capi_rktio_get_current_directory", check_rktio_p(r))
+
 #RKTIO_EXTERN rktio_ok_t rktio_set_current_directory(rktio_t *rktio, rktio_const_string_t path);
+capi_rktio_set_current_directory = librktio.rktio_set_current_directory
+capi_rktio_set_current_directory.argtypes = [rktio_p, rktio_const_string_t]
+capi_rktio_set_current_directory.restype = rktio_ok_t
+capi_rktio_set_current_directory.errcheck = check_rktio_ok_t
+def rktio_set_current_directory(r: rktio_p, path):
+  return capi_call("capi_rktio_set_current_directory", check_rktio_p(r), os.fsencode(path))
 
 #RKTIO_EXTERN rktio_ok_t rktio_make_directory(rktio_t *rktio, rktio_const_string_t filename);
 #/* Can report `RKTIO_ERROR_EXISTS`. */
@@ -1870,9 +2310,35 @@ def rktio_set_file_modify_seconds(rktio, filepath: _os.PathLike, secs: int):
 #/* Interrupt a directory list in progress, not needed after
 #   `rktio_directory_list_step` returns "": */
 
+def check_list_of_strings(out, *rest):
+  if out:
+    strings = []
+    for n in itertools.count():
+      it = dynamic_array(char_p, out, n + 1)
+      if it[n] is None:
+        strings = it[:n]
+        break
+    rktio_free(out)
+    return tuple(strings)
+  else:
+    raise ValueError("expected pointer", out)
+
+def check_list_of_paths(out, *rest):
+  strings = check_list_of_strings(out, *rest)
+  return tuple(_os.fsdecode(path) for path in strings)
+
 #RKTIO_EXTERN char **rktio_filesystem_roots(rktio_t *rktio);
 #/* Returns a NULL-terminated array. Free each string. Currently never
 #   errors. */
+capi_rktio_filesystem_roots = librktio.rktio_filesystem_roots
+capi_rktio_filesystem_roots.argtypes = [rktio_p]
+capi_rktio_filesystem_roots.restype = void_p
+capi_rktio_filesystem_roots.errcheck = check_list_of_paths
+def rktio_filesystem_roots(rktio):
+  """Returns a NULL-terminated array. Free each string. Currently never
+  errors."""
+  out = capi_call("rktio_filesystem_roots", check_rktio_p(rktio))
+  return out
 
 #/*************************************************/
 #/* File copying                                  */
@@ -1934,16 +2400,70 @@ def rktio_set_file_modify_seconds(rktio, filepath: _os.PathLike, secs: int):
 #  RKTIO_PATH_CACHE_DIR
 #};
 
+class RKTIO_PATH(_enum.IntEnum):
+  RKTIO_PATH_SYS_DIR    = _enum.auto()
+  RKTIO_PATH_TEMP_DIR   = _enum.auto()
+  RKTIO_PATH_PREF_DIR   = _enum.auto()
+  RKTIO_PATH_PREF_FILE  = _enum.auto()
+  RKTIO_PATH_ADDON_DIR  = _enum.auto()
+  RKTIO_PATH_HOME_DIR   = _enum.auto()
+  RKTIO_PATH_DESK_DIR   = _enum.auto()
+  RKTIO_PATH_DOC_DIR    = _enum.auto()
+  RKTIO_PATH_INIT_DIR   = _enum.auto()
+  RKTIO_PATH_INIT_FILE  = _enum.auto()
+  RKTIO_PATH_CACHE_DIR  = _enum.auto()
+
+RKTIO_PATH_SYS_DIR    = RKTIO_PATH.RKTIO_PATH_SYS_DIR   
+RKTIO_PATH_TEMP_DIR   = RKTIO_PATH.RKTIO_PATH_TEMP_DIR  
+RKTIO_PATH_PREF_DIR   = RKTIO_PATH.RKTIO_PATH_PREF_DIR  
+RKTIO_PATH_PREF_FILE  = RKTIO_PATH.RKTIO_PATH_PREF_FILE 
+RKTIO_PATH_ADDON_DIR  = RKTIO_PATH.RKTIO_PATH_ADDON_DIR 
+RKTIO_PATH_HOME_DIR   = RKTIO_PATH.RKTIO_PATH_HOME_DIR  
+RKTIO_PATH_DESK_DIR   = RKTIO_PATH.RKTIO_PATH_DESK_DIR  
+RKTIO_PATH_DOC_DIR    = RKTIO_PATH.RKTIO_PATH_DOC_DIR   
+RKTIO_PATH_INIT_DIR   = RKTIO_PATH.RKTIO_PATH_INIT_DIR  
+RKTIO_PATH_INIT_FILE  = RKTIO_PATH.RKTIO_PATH_INIT_FILE 
+RKTIO_PATH_CACHE_DIR  = RKTIO_PATH.RKTIO_PATH_CACHE_DIR 
+
+capi_rktio_system_path = librktio.rktio_system_path
+capi_rktio_system_path.argtypes = [rktio_p, int_t]
+capi_rktio_system_path.restype = char_p
+capi_rktio_system_path.errcheck = check_rktio_ok_t
+def rktio_system_path(rktio, which: RKTIO_PATH):
+  out = capi_call("rktio_system_path", check_rktio_p(rktio), int(RKTIO_PATH(which)))
+  return _os.fsdecode(out)
+
 #RKTIO_EXTERN char *rktio_expand_user_tilde(rktio_t *rktio, rktio_const_string_t filename);
 #/* Path must start with tilde, otherwise `RKTIO_ERROR_NO_TILDE`.
 #   Other possible errors are `RKTIO_ERROR_ILL_FORMED_USER` and
 #   `RKTIO_ERROR_UNKNOWN_USER`. */
+capi_rktio_expand_user_tilde = librktio.rktio_expand_user_tilde
+capi_rktio_expand_user_tilde.argtypes = [rktio_p, rktio_const_string_t]
+capi_rktio_expand_user_tilde.restype = char_p
+capi_rktio_expand_user_tilde.errcheck = check_rktio_ok_t
+def rktio_expand_user_tilde(rktio, filename):
+  """Path must start with tilde, otherwise `RKTIO_ERROR_NO_TILDE`.
+  Other possible errors are `RKTIO_ERROR_ILL_FORMED_USER` and
+  `RKTIO_ERROR_UNKNOWN_USER`."""
+  out = capi_call("rktio_expand_user_tilde", check_rktio_p(rktio), _os.fsencode(filename))
+  return _os.fsdecode(out)
 
 #RKTIO_EXTERN_NOERR char *rktio_uname(rktio_t *rktio);
 #/* Returns a string describing the current machine and installation,
 #   similar to the return of `uname -a` on Unix. If machine information
 #   cannot be obtained for some reason, the result is a copy of
 #   "<unknown machine>". */
+capi_rktio_uname = librktio.rktio_uname
+capi_rktio_uname.argtypes = [rktio_p]
+capi_rktio_uname.restype = char_p
+capi_rktio_uname.errcheck = check_rktio_ok_t
+def rktio_uname(rktio):
+  """Returns a string describing the current machine and installation,
+  similar to the return of `uname -a` on Unix. If machine information
+  cannot be obtained for some reason, the result is a copy of
+  "<unknown machine>"."""
+  out = capi_call("rktio_uname", check_rktio_p(rktio))
+  return out
 
 #/*************************************************/
 #/* Sleep and signals                             */
@@ -1982,16 +2502,15 @@ class RktioSignalHandle(CParameter):
 capi_rktio_get_signal_handle = librktio.rktio_get_signal_handle
 capi_rktio_get_signal_handle.argtypes = [rktio_p]
 capi_rktio_get_signal_handle.restype = rktio_signal_handle_p
-capi_rktio_get_signal_handle.errcheck = check_rktio_signal_handle_p
 def rktio_get_signal_handle(rktio):
   """Gets the handle for the given `rktio_t`."""
-  return RktioSignalHandle(capi_call("capi_rktio_get_signal_handle", check_rktio_p(rktio)))
+  out = capi_call("capi_rktio_get_signal_handle", check_rktio_p(rktio))
+  return RktioSignalHandle(out)
 
 
 #RKTIO_EXTERN void rktio_signal_received_at(rktio_signal_handle_t *h);
 #/* Signals the given handle. This function can be called from any
 #   thread or from signal handlers. */
-
 capi_rktio_signal_received_at = librktio.rktio_signal_received_at
 capi_rktio_signal_received_at.argtypes = [rktio_signal_handle_p]
 capi_rktio_signal_received_at.restype = None
@@ -1999,7 +2518,6 @@ def rktio_signal_received_at(h):
   """Signals the given handle. This function can be called from any
   thread or from signal handlers."""
   return capi_call("rktio_signal_received_at", check_rktio_signal_handle_p(h))
-
 
 #RKTIO_EXTERN void rktio_signal_received(rktio_t *rktio);
 #/* A shorthand for `rktio_signal_received_at` composed with
@@ -2094,9 +2612,9 @@ RKTIO_NUM_OS_SIGNALS = RKTIO_OS_SIGNAL.RKTIO_NUM_OS_SIGNALS
 #   call. After a signal is registered, trying to re-register it after
 #   threads start is harmless. */
 capi_rktio_will_modify_os_signal_handler = librktio.rktio_will_modify_os_signal_handler
-capi_rktio_will_modify_os_signal_handler.argtypes = [rktio_p]
+capi_rktio_will_modify_os_signal_handler.argtypes = [int_t]
 capi_rktio_will_modify_os_signal_handler.restype = None
-def rktio_will_modify_os_signal_handler(rktio):
+def rktio_will_modify_os_signal_handler(sig_id):
   """Registers with rktio that an operating-system signal handler is
   about to be modified within the process but outside of rktio, where
   `sig_id` is a signal identifier --- such as SIGINT or SIGTERM. This
@@ -2106,7 +2624,7 @@ def rktio_will_modify_os_signal_handler(rktio):
   and registration of the signal can happen before any `rktio_init`
   call. After a signal is registered, trying to re-register it after
   threads start is harmless."""
-  return RKTIO_OS_SIGNAL(capi_call("capi_rktio_will_modify_os_signal_handler", check_rktio_p(rktio)))
+  return capi_call("capi_rktio_will_modify_os_signal_handler", check_int(sig_id))
 
 
 #/*************************************************/
@@ -2122,20 +2640,97 @@ def rktio_will_modify_os_signal_handler(rktio):
 #  char *zone_name; /* can be NULL; otherwise, free it */
 #} rktio_date_t;
 
+@dataclasses.dataclass
+class rktio_date_t(_c.Structure):
+  year: int
+  month: int
+  day: int
+  hour: int
+  minute: int
+  second: int
+  nanosecond: int
+  zone_name: str
+  zone_offset: int
+  is_dst: int
+  day_of_week: int
+  day_of_year: int
+  _fields_ = [
+      ('nanosecond', int_t),
+      ('second', int_t),
+      ('minute', int_t),
+      ('hour', int_t),
+      ('day', int_t),
+      ('month', int_t),
+      ('year', intptr_t),
+      ('day_of_week', int_t),
+      ('day_of_year', int_t),
+      ('is_dst', int_t),
+      ('zone_offset', int_t),
+      ('zone_name', char_p),
+      ]
+
+rktio_date_p = _c.POINTER(rktio_date_t)
+
+def check_rktio_date_p(p, *args):
+  return check_type(p, rktio_date_p, "rktio_date_p")
+
+def check_rktio_date_p_or_null(p, *args):
+  return check_type_or_null(p, rktio_date_p, "rktio_date_p")
+
 #RKTIO_EXTERN_NOERR uintptr_t rktio_get_milliseconds(void);
 #/* Wll-clock time. Overflow may cause the result to wrap around to 0,
 #   at least on a 32-bit platform. */
+capi_rktio_get_milliseconds = librktio.rktio_get_milliseconds
+capi_rktio_get_milliseconds.argtypes = []
+capi_rktio_get_milliseconds.restype = uintptr_t
+def rktio_get_milliseconds():
+  """Wall-clock time. Overflow may cause the result to wrap around to 0,
+  at least on a 32-bit platform."""
+  out = capi_call("rktio_get_milliseconds")
+  return out
 
 #RKTIO_EXTERN_NOERR double rktio_get_inexact_milliseconds(void);
 #/* Wall-clock time. No overflow, but won't strictly increase if the
 #   system clock is reset. */
+capi_rktio_get_inexact_milliseconds = librktio.rktio_get_inexact_milliseconds
+capi_rktio_get_inexact_milliseconds.argtypes = []
+capi_rktio_get_inexact_milliseconds.restype = double_t
+def rktio_get_inexact_milliseconds():
+  """Wall-clock time. No overflow, but won't strictly increase if the
+  system clock is reset."""
+  out = capi_call("rktio_get_inexact_milliseconds")
+  return out
 
 #RKTIO_EXTERN_NOERR double rktio_get_inexact_monotonic_milliseconds(rktio_t *rktio);
 #/* Real time like wall-clock time, but will strictly increase,
 #   assuming that the host system provides a monotonic clock. */
+capi_rktio_get_inexact_monotonic_milliseconds = librktio.rktio_get_inexact_monotonic_milliseconds
+capi_rktio_get_inexact_monotonic_milliseconds.argtypes = [rktio_p]
+capi_rktio_get_inexact_monotonic_milliseconds.restype = double_t
+def rktio_get_inexact_monotonic_milliseconds(rktio):
+  """Real time like wall-clock time, but will strictly increase,
+  assuming that the host system provides a monotonic clock."""
+  out = capi_call("rktio_get_inexact_monotonic_milliseconds", check_rktio_p(rktio))
+  return out
 
 #RKTIO_EXTERN_NOERR uintptr_t rktio_get_process_milliseconds(rktio_t *rktio);
+capi_rktio_get_process_milliseconds = librktio.rktio_get_process_milliseconds
+capi_rktio_get_process_milliseconds.argtypes = [rktio_p]
+capi_rktio_get_process_milliseconds.restype = uintptr_t
+def rktio_get_process_milliseconds(rktio):
+  """CPU time across all threads withing the process. Overflow may cause
+  the result to wrap around to 0, at least on a 32-bit platform."""
+  out = capi_call("rktio_get_process_milliseconds", check_rktio_p(rktio))
+  return out
 #RKTIO_EXTERN_NOERR uintptr_t rktio_get_process_children_milliseconds(rktio_t *rktio);
+capi_rktio_get_process_children_milliseconds = librktio.rktio_get_process_children_milliseconds
+capi_rktio_get_process_children_milliseconds.argtypes = [rktio_p]
+capi_rktio_get_process_children_milliseconds.restype = uintptr_t
+def rktio_get_process_children_milliseconds(rktio):
+  """CPU time across all threads withing the process. Overflow may cause
+  the result to wrap around to 0, at least on a 32-bit platform."""
+  out = capi_call("rktio_get_process_children_milliseconds", check_rktio_p(rktio))
+  return out
 #/* CPU time across all threads withing the process. Overflow may cause
 #   the result to wrap around to 0, at least on a 32-bit platform. */
 
@@ -2146,8 +2741,24 @@ capi_rktio_get_seconds.restype = rktio_timestamp_t
 def rktio_get_seconds(rktio):
   out = capi_call("rktio_get_seconds", check_rktio_p(rktio))
   return out
+
 #RKTIO_EXTERN rktio_date_t *rktio_seconds_to_date(rktio_t *rktio, rktio_timestamp_t seconds, int nanoseconds, int get_gmt);
 #/* A timestamp can be negative to represent a date before 1970. */
+capi_rktio_seconds_to_date = librktio.rktio_seconds_to_date
+capi_rktio_seconds_to_date.argtypes = [rktio_p, rktio_timestamp_t, int_t, int_t]
+capi_rktio_seconds_to_date.restype = rktio_date_p
+capi_rktio_seconds_to_date.errcheck = check_rktio_ok_t
+def rktio_seconds_to_date(rktio, seconds: int, nanoseconds: int, get_gmt: bool = False):
+  """A timestamp can be negative to represent a date before 1970."""
+  out = capi_call("rktio_seconds_to_date", check_rktio_p(rktio), seconds, nanoseconds, get_gmt)
+  return out.contents
+
+def rktio_get_date(rktio, msec: float = None, get_gmt: bool = False):
+  if msec is None:
+    msec = rktio_get_inexact_milliseconds()
+  sec = int(msec // 1000)
+  nsec = int((msec % 1000) * 1e6)
+  return rktio_seconds_to_date(rktio, sec, nsec, get_gmt)
 
 #/*************************************************/
 #/* Windows ShellExecute                          */
@@ -2195,8 +2806,9 @@ capi_rktio_processor_count = librktio.rktio_processor_count
 capi_rktio_processor_count.argtypes = [rktio_p]
 capi_rktio_processor_count.restype = int_t
 def rktio_processor_count(rktio: rktio_p):
-  if rktio:
-    return capi_call("capi_rktio_processor_count", check_rktio_p(rktio))
+  """Returns the number of processing units, either as CPUs, cores, or
+  hyperthreads."""
+  return capi_call("capi_rktio_processor_count", check_rktio_p(rktio))
 
 #/*************************************************/
 #/* Logging                                       */
@@ -2327,6 +2939,15 @@ def rktio_processor_count(rktio: rktio_p):
 #RKTIO_EXTERN char *rktio_system_language_country(rktio_t *rktio);
 #/* Returns the current system's language in country in a 5-character
 #   format such as "en_US". */
+capi_rktio_system_language_country = librktio.rktio_system_language_country
+capi_rktio_system_language_country.argtypes = [rktio_p]
+capi_rktio_system_language_country.restype = char_p
+capi_rktio_system_language_country.errcheck = check_rktio_ok_t
+def rktio_system_language_country(rktio):
+  """Returns the current system's language in country in a 5-character
+  format such as "en_US"."""
+  out = capi_call("rktio_system_language_country", check_rktio_p(rktio))
+  return out
 
 
 #/*************************************************/
@@ -2561,6 +3182,9 @@ capi_rktio_get_last_error.argtypes = [rktio_p]
 capi_rktio_get_last_error.restype = int_t
 def rktio_get_last_error(rktio: rktio_p):
   if err := capi_call("rktio_get_last_error", check_rktio_p(rktio)):
+    kind = rktio_get_last_error_kind(rktio)
+    if kind == RKTIO_ERROR_KIND_POSIX:
+      return POSIX_ERRNO(err)
     return RKTIO_ERROR(err)
 
 # RKTIO_EXTERN_NOERR int rktio_get_last_error_step(rktio_t *rktio);
@@ -2579,9 +3203,9 @@ def rktio_get_last_error_step(rktio) -> int:
 capi_rktio_set_last_error = librktio.rktio_set_last_error
 capi_rktio_set_last_error.argtypes = [rktio_p, int_t, int_t]
 capi_rktio_set_last_error.restype = None
-def rktio_set_last_error(rktio, kind: RKTIO_ERROR_KIND, errid: RKTIO_ERROR):
+def rktio_set_last_error(rktio, kind: RKTIO_ERROR_KIND, errid: int):
   #out = capi_call("rktio_set_last_error", check_rktio_p(rktio), int(RKTIO_ERROR_KIND(kind)), int(RKTIO_ERROR(errid)))
-  out = capi_call("rktio_set_last_error", check_rktio_p(rktio), kind, errid)
+  out = capi_call("rktio_set_last_error", check_rktio_p(rktio), int(kind), int(errid))
   return out
 # RKTIO_EXTERN void rktio_set_last_error_step(rktio_t *rktio, int step);
 capi_rktio_set_last_error_step = librktio.rktio_set_last_error_step
@@ -2632,13 +3256,260 @@ capi_rktio_get_error_string = librktio.rktio_get_error_string
 capi_rktio_get_error_string.argtypes = [rktio_p]
 capi_rktio_get_error_string.restype = void_p
 def rktio_get_error_string(rktio, kind: RKTIO_ERROR_KIND, errid: RKTIO_ERROR):
-  out = capi_call("rktio_get_error_string", check_rktio_p(rktio), int(RKTIO_ERROR_KIND(kind)), int(RKTIO_ERROR(errid)))
+  out = capi_call("rktio_get_error_string", check_rktio_p(rktio), kind, errid) #int(RKTIO_ERROR_KIND(kind)), int(RKTIO_ERROR(errid)))
   return maybeutf8(out)
 # /* The returned string for `rktio_...error_string` should not be
 #    deallocated, but it only lasts reliably until the next call to
 #    either of the functions. */
 
 # /*************************************************/
+
+
+import platform
+from socket import (
+    inet_ntop,
+    AF_INET,
+    AF_INET6,
+)
+
+libc = _c.CDLL(None)
+
+
+if True:
+
+  class c_sockaddr_in4(_c.Structure):
+      _fields_ = [
+          ('sin_family', _c.c_uint16),
+          ('sin_port', _c.c_uint16),
+          ('sin_addr', _c.c_ubyte * 4),
+      ]
+
+
+  class c_sockaddr_in6(_c.Structure):
+      _fields_ = [
+          ('sin_family', _c.c_uint16),
+          ('sin_port', _c.c_uint16),
+          ('sin_flowinfo', _c.c_uint32),
+          ('sin_addr', _c.c_ubyte * 16),
+          ('sin_scope_id', _c.c_uint32),
+      ]
+
+  class c_sockaddr_in(_c.Union):
+      _fields_ = [
+          ('ai_addr4', c_sockaddr_in4),
+          ('ai_addr6', c_sockaddr_in6),
+      ]
+      @property
+      def u(self):
+        return self
+
+else:
+
+  class c_sockaddr_in4(_c.Structure):
+      _fields_ = [
+          # ('sin_family', _c.c_uint16),
+          ('sin_port', _c.c_uint16),
+          ('sin_addr', _c.c_ubyte * 4),
+      ]
+
+
+  class c_sockaddr_in6(_c.Structure):
+      _fields_ = [
+          # ('sin_family', _c.c_uint16),
+          ('sin_port', _c.c_uint16),
+          ('sin_flowinfo', _c.c_uint32),
+          ('sin_addr', _c.c_ubyte * 16),
+          ('sin_scope_id', _c.c_uint32),
+      ]
+
+  class c_sockaddr_in_body(_c.Union):
+      _fields_ = [
+          ('ai_addr4', c_sockaddr_in4),
+          ('ai_addr6', c_sockaddr_in6),
+      ]
+
+  class c_sockaddr_in(_c.Structure):
+      _fields_ = [
+          ('sin_family', _c.c_uint16),
+          ('u', c_sockaddr_in_body),
+      ]
+
+class c_sockaddr(_c.Structure):
+    _fields_ = [
+        ('sin_size', _c.c_uint8),
+        ('sin_family_', _c.c_int8),
+        ('sin_addr_', _c.c_char * 0),
+    ]
+    @property
+    def sin_family(self):
+      return socket.AddressFamily(self.sin_family_)
+
+    @property
+    def sin_addr_raw(self):
+      addr = _c.addressof(self) + c_sockaddr.sin_addr_.offset
+      addrlen = max(0, self.sin_size - 2)
+      return dynamic_array(_c.c_char, addr, addrlen)
+
+    @property
+    def sin_addr(self):
+      addr = _c.addressof(self) + c_sockaddr.sin_addr_.offset
+      addrlen = max(0, self.sin_size - 2)
+      family = self.sin_family
+      if family == socket.AddressFamily.AF_UNIX:
+        return dynamic_array(_c.c_char, addr, addrlen)
+      elif family == socket.AddressFamily.AF_INET:
+        return dynamic_array(c_sockaddr_in4, addr, 1)[0]
+        # return _c.POINTER(c_sockaddr_in4).from_address(addr)
+      elif family == socket.AddressFamily.AF_INET6:
+        return dynamic_array(c_sockaddr_in6, addr, 1)[0]
+        # return _c.POINTER(c_sockaddr_in6).from_address(addr)
+      else:
+        raise NotImplementedError(family)
+
+    def __repr__(self):
+      return f"c_sockaddr(sin_size={self.sin_size}, sin_family={self.sin_family.name}, sin_addr={_repr(self.sin_addr)})"
+
+
+def _repr(x):
+  if hasattr(x, 'raw'):
+    return repr(x.raw)
+  return repr(x)
+
+
+class c_addrinfo(_c.Structure):
+    pass
+
+
+c_addrinfo._fields_ = [
+    ('ai_flags', _c.c_uint32),
+    ('ai_family', _c.c_uint32),
+    ('ai_socktype', _c.c_uint32),
+    ('ai_protocol', _c.c_uint32),
+    ('ai_addrlen', _c.c_uint32),
+] + ([
+    ('ai_canonname', _c.c_char_p),
+    ('ai_addr', _c.POINTER(c_sockaddr_in)),
+] if platform.system() == 'Darwin' else [
+    ('ai_addr', _c.POINTER(c_sockaddr_in)),
+    ('ai_canonname', _c.c_char_p),
+]) + [
+    ('ai_next', _c.POINTER(c_addrinfo)),
+]
+
+c_addrinfo_p = _c.POINTER(c_addrinfo)
+
+address_field_names = {
+    AF_INET: 'ai_addr4',
+    AF_INET6: 'ai_addr6',
+}
+
+def getaddrinfo(host, port, family=socket.AddressFamily.AF_INET.value, type=socket.SocketKind.SOCK_STREAM.value, proto=0, flags=0):
+    result = c_addrinfo_p()
+    hints = c_addrinfo()
+
+    hints.flags = flags
+    hints.ai_family = family
+    hints.ai_socktype = type
+    hints.proto = proto
+
+    result = c_addrinfo_p()
+    error = libc.getaddrinfo(
+        _c.c_char_p(host),
+        _c.c_char_p(port) if port is not None else None,
+        _c.byref(hints),
+        _c.byref(result),
+    )
+    if error:
+        raise Exception(error)
+
+    result_addrinfo = result.contents
+    family = socket.AddressFamily(result_addrinfo.ai_family)
+    address_field_name = address_field_names[family]
+    address_field = getattr(result_addrinfo.ai_addr.contents.u, address_field_name)
+    address_raw = address_field.sin_addr
+
+    address = inet_ntop(family, address_raw)
+    libc.freeaddrinfo(result)
+
+    return (family, address)
+
+
+def check_errno(out, *rest):
+  if out != 0:
+    code = _c.get_errno()
+    msg = _os.strerror(code)
+    err = OSError(f'{code}: {msg}', (out, *rest))
+    err.errno = code
+    err.strerror = msg
+    raise err
+  return out
+
+socklen_t = intptr_t
+socklen_p = _c.POINTER(socklen_t)
+
+capi_getsockname = libc.getsockname
+#capi_getsockname.argtypes = [int_t, _c.POINTER(c_sockaddr_in), _c.POINTER(socklen_t)]
+capi_getsockname.argtypes = [int_t, void_p, _c.POINTER(socklen_t)]
+capi_getsockname.restype = int_t
+capi_getsockname.errcheck = check_errno
+def getsockname(sockfd):
+  fd = check_int(sockfd)
+  n = socklen_t()
+  capi_call("capi_getsockname", fd, None, n)
+  buf = (_c.c_char * n.value)()
+  capi_call("capi_getsockname", fd, buf, n)
+  addr = c_sockaddr()
+  _c.resize(addr, n.value)
+  capi_call("capi_getsockname", fd, _c.pointer(addr), n)
+  return addr
+
+
+
+
+# /*************************************************/
+
+
+
+
+
+# rktio_addrinfo_t *lookup_loop(rktio_t *rktio,
+#                               const char *hostname, int portno,
+#                               int family, int passive, int tcp)
+# {
+def lookup_loop(rktio, hostname: Optional[str], portno: int, family: int = -1, passive: bool = True, tcp: bool = True):
+  # rktio_addrinfo_lookup_t *lookup;
+  # rktio_addrinfo_t *addr;
+
+  lookup = rktio_start_addrinfo_lookup(rktio, hostname, portno, family, passive, tcp);
+  # check_valid(lookup);
+
+  # while (rktio_poll_addrinfo_lookup_ready(rktio, lookup) == RKTIO_POLL_NOT_READY) {
+  while rktio_poll_addrinfo_lookup_ready(rktio, lookup) == RKTIO_POLL_NOT_READY:
+    # rktio_poll_set_t *ps;
+    # ps = rktio_make_poll_set(rktio);
+    # check_valid(ps);
+    ps = rktio_make_poll_set(rktio)
+
+    # rktio_poll_add_addrinfo_lookup(rktio, lookup, ps);
+    # rktio_sleep(rktio, 0, ps, NULL);
+    # rktio_poll_set_forget(rktio, ps);
+
+    rktio_poll_add_addrinfo_lookup(rktio, lookup, ps)
+    rktio_sleep(rktio, 0, ps, NULL)
+    rktio_poll_set_forget(rktio, ps)
+    del ps
+  # }
+  
+  # check_valid(rktio_poll_addrinfo_lookup_ready(rktio, lookup) == RKTIO_POLL_READY);
+  check_valid(rktio, rktio_poll_addrinfo_lookup_ready(rktio, lookup) == RKTIO_POLL_READY)
+
+  # addr = rktio_addrinfo_lookup_get(rktio, lookup);
+  # check_valid(addr);
+
+  addr = rktio_addrinfo_lookup_get(rktio, lookup);
+
+  return addr;
+# }
 
 
 def wait_read(rktio, rfd):
