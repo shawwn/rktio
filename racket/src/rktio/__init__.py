@@ -25,8 +25,12 @@ POSIX_ERRNO = make_posix_errno()
 
 NULL = None
 
-intptr_t = _c.c_ssize_t
-uintptr_t = _c.c_size_t
+#intptr_t = _c.c_ssize_t
+#uintptr_t = _c.c_size_t
+
+intptr_t = _c.c_long
+uintptr_t = _c.c_ulong
+
 int_t = _c.c_int
 float_t = _c.c_float
 double_t = _c.c_double
@@ -224,7 +228,8 @@ def capi_call(name, *args, **kws):
 # /* A rktio_t value represents an instance of the Racket I/O system.
 #    Almost every `rktio_...` function takes it as the first argument. */
 class rktio_t(_c.Structure):
-  pass
+  """A rktio_t value represents an instance of the Racket I/O system.
+  Almost every `rktio_...` function takes it as the first argument."""
 
 rktio_p = _c.POINTER(rktio_t)
 
@@ -235,6 +240,9 @@ def check_rktio_p_or_null(p, *args):
   return check_type_or_null(p, rktio_p, "rktio_p")
 
 class Rktio(CParameter):
+  """A rktio_t value represents an instance of the Racket I/O system.
+  Almost every `rktio_...` function takes it as the first argument."""
+
   def __init__(self, p):
     typecheck_or_null(p, rktio_p, "rktio_p")
     super().__init__(p)
@@ -326,7 +334,9 @@ def rktio_error(result, *rest, rktio=None):
 
 def check_valid(rktio, result, *rest):
   if not result:
-    rktio_error(result, *rest, rktio=rktio)
+    if result != b'' and result != '':
+      rktio_error(result, *rest, rktio=rktio)
+      raise AssertionError("no rktio_error, but result failed", result, *rest)
 
 
 def check_rktio_ok_t(result, *rest):
@@ -726,15 +736,22 @@ def rktio_forget(rktio, fd):
 ##define RKTIO_STDIN  0
 ##define RKTIO_STDOUT 1
 ##define RKTIO_STDERR 2
+class RKTIO_STD_FD(_enum.IntEnum):
+  RKTIO_STDIN  = 0
+  RKTIO_STDOUT = 1
+  RKTIO_STDERR = 2
+
+RKTIO_STDIN  = RKTIO_STD_FD.RKTIO_STDIN  
+RKTIO_STDOUT = RKTIO_STD_FD.RKTIO_STDOUT 
+RKTIO_STDERR = RKTIO_STD_FD.RKTIO_STDERR 
+
 capi_rktio_std_fd = librktio.rktio_std_fd
 capi_rktio_std_fd.argtypes = [rktio_p, int_t]
 capi_rktio_std_fd.restype = rktio_fd_p
 capi_rktio_std_fd.errcheck = check_rktio_fd_p
-def rktio_std_fd(rktio: rktio_p, which: Literal["stdin", "stdout", "stderr", 0, 1, 2]):
+def rktio_std_fd(rktio: rktio_p, which: RKTIO_STD_FD):
   """Gets stdin/stdout/stderr."""
-  which = dict(stdin=0, stdout=1, stderr=2).get(which, which)
-  if which not in [0, 1, 2]:
-    raise TypeError(f"Expected stdin/stdout/stderr/0/1/2, got {which!r}")
+  which = int(RKTIO_STD_FD(which))
   with rktio__fd_lock():
     fd = capi_call("capi_rktio_std_fd", check_rktio_p(rktio), which)
     return rktio__fd_on_new(rktio, fd)
@@ -2155,11 +2172,33 @@ def rktio_end_sleep(rktio):
 #/* Files, directories, and links                 */
 
 #RKTIO_EXTERN rktio_bool_t rktio_file_exists(rktio_t *rktio, rktio_const_string_t filename);
+capi_rktio_file_exists = librktio.rktio_file_exists
+capi_rktio_file_exists.argtypes = [rktio_p, rktio_const_string_t]
+capi_rktio_file_exists.restype = bool_t
+def rktio_file_exists(rktio, filename):
+  return capi_call("rktio_file_exists", check_rktio_p(rktio), _os.fsencode(filename))
 #RKTIO_EXTERN rktio_bool_t rktio_directory_exists(rktio_t *rktio, rktio_const_string_t dirname);
+capi_rktio_directory_exists = librktio.rktio_directory_exists
+capi_rktio_directory_exists.argtypes = [rktio_p, rktio_const_string_t]
+capi_rktio_directory_exists.restype = bool_t
+def rktio_directory_exists(rktio, dirname):
+  return capi_call("rktio_directory_exists", check_rktio_p(rktio), _os.fsencode(dirname))
 #RKTIO_EXTERN rktio_bool_t rktio_link_exists(rktio_t *rktio, rktio_const_string_t filename);
+capi_rktio_link_exists = librktio.rktio_link_exists
+capi_rktio_link_exists.argtypes = [rktio_p, rktio_const_string_t]
+capi_rktio_link_exists.restype = bool_t
+def rktio_link_exists(rktio, filename):
+  return capi_call("rktio_link_exists", check_rktio_p(rktio), _os.fsencode(filename))
 #RKTIO_EXTERN rktio_bool_t rktio_is_regular_file(rktio_t *rktio, rktio_const_string_t filename);
 #/* On Windows, check for special filenames (like "aux") before calling
 #   the `rktio_file_exists` or `rktio_is_regular_file`. */
+capi_rktio_is_regular_file = librktio.rktio_is_regular_file
+capi_rktio_is_regular_file.argtypes = [rktio_p, rktio_const_string_t]
+capi_rktio_is_regular_file.restype = bool_t
+def rktio_is_regular_file(rktio, filename):
+  """On Windows, check for special filenames (like "aux") before calling
+  the `rktio_file_exists` or `rktio_is_regular_file`."""
+  return capi_call("rktio_is_regular_file", check_rktio_p(rktio), _os.fsencode(filename))
 
 ##define RKTIO_FILE_TYPE_FILE           1
 ##define RKTIO_FILE_TYPE_DIRECTORY      2
@@ -2168,16 +2207,61 @@ def rktio_end_sleep(rktio):
 
 ##define RKTIO_FILE_TYPE_ERROR  (-1)
 
+class RKTIO_FILE_TYPE(_enum.IntEnum):
+  FILE           = 1
+  DIRECTORY      = 2
+  LINK           = 3
+  DIRECTORY_LINK = 4
+  ERROR          = -1
+
+RKTIO_FILE_TYPE_FILE           = RKTIO_FILE_TYPE.FILE          
+RKTIO_FILE_TYPE_DIRECTORY      = RKTIO_FILE_TYPE.DIRECTORY     
+RKTIO_FILE_TYPE_LINK           = RKTIO_FILE_TYPE.LINK          
+RKTIO_FILE_TYPE_DIRECTORY_LINK = RKTIO_FILE_TYPE.DIRECTORY_LINK
+RKTIO_FILE_TYPE_ERROR          = RKTIO_FILE_TYPE.ERROR         
+
+def check_rktio_file_type_result(result, *rest):
+  #check_valid(None, result != RKTIO_FILE_TYPE_ERROR, *rest)
+  check_valid(None, ok(result), *rest)
+  if result == RKTIO_FILE_TYPE_ERROR:
+    raise ValueError(RKTIO_FILE_TYPE_ERROR, *rest)
+  return RKTIO_FILE_TYPE(result)
+
 #RKTIO_EXTERN_ERR(RKTIO_FILE_TYPE_ERROR)
 #int rktio_file_type(rktio_t *rktio, rktio_const_string_t filename);
 #/* Result is `RKTIO_FILE_TYPE_ERROR` for error, otherwise one of
 #   the `RKTIO_FILE_TYPE_...` values. On Windows, check for special
 #   filenames (like "aux") before calling this function. */
+capi_rktio_file_type = librktio.rktio_file_type
+capi_rktio_file_type.argtypes = [rktio_p, rktio_const_string_t]
+capi_rktio_file_type.restype = int_t
+capi_rktio_file_type.errcheck = check_rktio_file_type_result
+def rktio_file_type(rktio, filename):
+  """Result is `RKTIO_FILE_TYPE_ERROR` for error, otherwise one of
+  the `RKTIO_FILE_TYPE_...` values. On Windows, check for special
+  filenames (like "aux") before calling this function."""
+  out = capi_call("rktio_file_type", check_rktio_p(rktio), _os.fsencode(filename))
+  return out
 
 #RKTIO_EXTERN rktio_ok_t rktio_delete_file(rktio_t *rktio, rktio_const_string_t fn, rktio_bool_t enable_write_on_fail);
+capi_rktio_delete_file = librktio.rktio_delete_file
+capi_rktio_delete_file.argtypes = [rktio_p, rktio_const_string_t, rktio_bool_t]
+capi_rktio_delete_file.restype = rktio_ok_t
+capi_rktio_delete_file.errcheck = check_rktio_ok_t
+def rktio_delete_file(rktio, filename, enable_write_on_fail: bool = True):
+  out = capi_call("rktio_delete_file", check_rktio_p(rktio), _os.fsencode(filename), enable_write_on_fail)
+  return out
 
 #RKTIO_EXTERN rktio_ok_t rktio_rename_file(rktio_t *rktio, rktio_const_string_t dest, rktio_const_string_t src, rktio_bool_t exists_ok);
 #/* Can report `RKTIO_ERROR_EXISTS`. */
+capi_rktio_rename_file = librktio.rktio_rename_file
+capi_rktio_rename_file.argtypes = [rktio_p, rktio_const_string_t, rktio_const_string_t, rktio_bool_t]
+capi_rktio_rename_file.restype = rktio_ok_t
+capi_rktio_rename_file.errcheck = check_rktio_ok_t
+def rktio_rename_file(rktio, dest, src, exists_ok: bool):
+  """Can report `RKTIO_ERROR_EXISTS`."""
+  out = capi_call("rktio_rename_file", check_rktio_p(rktio), _os.fsencode(dest), _os.fsencode(src), exists_ok)
+  return out
 
 #RKTIO_EXTERN char *rktio_get_current_directory(rktio_t *rktio);
 capi_rktio_get_current_directory = librktio.rktio_get_current_directory
@@ -2197,10 +2281,27 @@ def rktio_set_current_directory(r: rktio_p, path):
 
 #RKTIO_EXTERN rktio_ok_t rktio_make_directory(rktio_t *rktio, rktio_const_string_t filename);
 #/* Can report `RKTIO_ERROR_EXISTS`. */
+capi_rktio_make_directory = librktio.rktio_make_directory
+capi_rktio_make_directory.argtypes = [rktio_p, rktio_const_string_t]
+capi_rktio_make_directory.restype = rktio_ok_t
+capi_rktio_make_directory.errcheck = check_rktio_ok_t
+def rktio_make_directory(rktio, filename):
+  """Can report `RKTIO_ERROR_EXISTS`."""
+  out = capi_call("rktio_make_directory", check_rktio_p(rktio), _os.fsencode(filename))
+  return out
 
 #RKTIO_EXTERN rktio_ok_t rktio_make_directory_with_permissions(rktio_t *rktio, rktio_const_string_t filename, int perm_bits);
 #/* Can report `RKTIO_ERROR_EXISTS`. */
 ##define RKTIO_DEFAULT_DIRECTORY_PERM_BITS 0777
+RKTIO_DEFAULT_DIRECTORY_PERM_BITS = 0o777
+
+capi_rktio_make_directory_with_permissions = librktio.rktio_make_directory_with_permissions
+capi_rktio_make_directory_with_permissions.argtypes = [rktio_p, rktio_const_string_t, int_t]
+capi_rktio_make_directory_with_permissions.restype = rktio_ok_t
+capi_rktio_make_directory_with_permissions.errcheck = check_rktio_ok_t
+def rktio_make_directory_with_permissions(rktio, filename, perm_bits: int = RKTIO_DEFAULT_DIRECTORY_PERM_BITS):
+  out = capi_call("rktio_make_directory_with_permissions", check_rktio_p(rktio), _os.fsencode(filename), perm_bits)
+  return out
 
 #RKTIO_EXTERN rktio_ok_t rktio_delete_directory(rktio_t *rktio, rktio_const_string_t filename, rktio_const_string_t current_directory,
 #                                               rktio_bool_t enable_write_on_fail);
@@ -2211,11 +2312,27 @@ def rktio_set_current_directory(r: rktio_p, path):
 #RKTIO_EXTERN char *rktio_readlink(rktio_t *rktio, rktio_const_string_t fullfilename);
 #/* Argument should not have a trailing separator. Can report
 #   `RKTIO_ERROR_NOT_A_LINK`. */
+capi_rktio_readlink = librktio.rktio_readlink
+capi_rktio_readlink.argtypes = [rktio_p, rktio_const_string_t]
+capi_rktio_readlink.restype = char_p
+capi_rktio_readlink.errcheck = check_rktio_ok_t
+def rktio_readlink(rktio, fullfilename):
+  """Argument should not have a trailing separator. Can report
+  `RKTIO_ERROR_NOT_A_LINK`."""
+  out = capi_call("rktio_readlink", check_rktio_p(rktio), _os.fsencode(fullfilename))
+  return _os.fsdecode(out)
 
 #RKTIO_EXTERN rktio_ok_t rktio_make_link(rktio_t *rktio, rktio_const_string_t src, rktio_const_string_t dest,
 #                                        rktio_bool_t dest_is_directory);
 #/* The `dest_is_directory` argument is used only
 #   on Windows. Can report `RKTIO_ERROR_EXISTS`. */
+capi_rktio_make_link = librktio.rktio_make_link
+capi_rktio_make_link.argtypes = [rktio_p, rktio_const_string_t, rktio_const_string_t, rktio_bool_t]
+capi_rktio_make_link.restype = rktio_ok_t
+capi_rktio_make_link.errcheck = check_rktio_ok_t
+def rktio_make_link(rktio, src, dest, dest_is_directory: bool):
+  out = capi_call("rktio_make_link", check_rktio_p(rktio), _os.fsencode(src), _os.fsencode(dest), dest_is_directory)
+  return out
 
 #/*************************************************/
 #/* File attributes                               */
@@ -2226,7 +2343,6 @@ rktio_timestamp_p = _c.POINTER(rktio_timestamp_t)
 
 def out_rktio_timestamp(ptr, *rest):
   return out_rktio_value(ptr, rktio_timestamp_p, *rest)
-
 
 #RKTIO_EXTERN rktio_filesize_t *rktio_file_size(rktio_t *rktio, rktio_const_string_t filename);
 capi_rktio_file_size = librktio.rktio_file_size
@@ -2262,16 +2378,105 @@ def rktio_set_file_modify_seconds(rktio, filepath: _os.PathLike, secs: int):
 #     for Windows. */
 #  rktio_bool_t ctime_is_change_time;
 #} rktio_stat_t;
+@dataclasses.dataclass(frozen=True)
+class rktio_stat_t(_c.Structure):
+  device_id: int
+  inode: int
+  mode: int
+  hardlink_count: int
+  user_id: int
+  group_id: int
+
+  device_id_for_special_file: int
+  size: int
+  block_size: int
+  block_count: int
+
+  access_time_seconds: int
+  access_time_nanoseconds: int
+
+  modify_time_seconds: int
+  modify_time_nanoseconds: int
+
+  # The `st_ctime` field is status change time for Posix and creation time
+  # for Windows.
+  ctime_seconds: int
+  ctime_nanoseconds: int
+  ctime_is_change_time: bool
+
+  #  /* Eventually, this should use `int64_t`, available in C99 and up */
+  #  uintptr_t device_id, inode, mode, hardlink_count, user_id, group_id,
+  #            device_id_for_special_file, size, block_size, block_count,
+  #            access_time_seconds, access_time_nanoseconds,
+  #            modify_time_seconds, modify_time_nanoseconds,
+  #            ctime_seconds, ctime_nanoseconds;
+  _fields_ = [(name, uintptr_t) for name in """
+               device_id inode mode hardlink_count user_id group_id
+               device_id_for_special_file size block_size block_count
+               access_time_seconds access_time_nanoseconds
+               modify_time_seconds modify_time_nanoseconds
+               ctime_seconds ctime_nanoseconds""".split()
+               ] + [
+                   ("ctime_is_change_time", rktio_bool_t),
+                   ]
+
+rktio_stat_p = _c.POINTER(rktio_stat_t)
 
 #RKTIO_EXTERN rktio_stat_t *rktio_file_or_directory_stat(rktio_t *rktio, rktio_const_string_t path, rktio_bool_t follow_links);
+capi_rktio_file_or_directory_stat = librktio.rktio_file_or_directory_stat
+capi_rktio_file_or_directory_stat.argtypes = [rktio_p, rktio_const_string_t, rktio_bool_t]
+capi_rktio_file_or_directory_stat.restype = rktio_stat_p
+capi_rktio_file_or_directory_stat.errcheck = check_rktio_ok_t
+def rktio_file_or_directory_stat(rktio, path, follow_links: bool = True):
+  out = capi_call("rktio_file_or_directory_stat", check_rktio_p(rktio), _os.fsencode(path), follow_links)
+  return out.contents
 
 #typedef struct rktio_identity_t {
 #  uintptr_t a, b, c;
 #  int a_bits, b_bits, c_bits; /* size of each in bits */
 #} rktio_identity_t;
 
+@dataclasses.dataclass(frozen=True)
+class rktio_identity_t(_c.Structure):
+  a: int
+  b: int
+  c: int
+
+  # size of each in bits
+  a_bits: int
+  b_bits: int
+  c_bits: int
+
+  def __hash__(self):
+    return hash((self.a, self.b, self.c, self.a_bits, self.b_bits, self.c_bits))
+
+  _fields_ = [
+      ("a", uintptr_t),
+      ("b", uintptr_t),
+      ("c", uintptr_t),
+      ("a_bits", int_t),
+      ("b_bits", int_t),
+      ("c_bits", int_t),
+      ]
+
+rktio_identity_p = _c.POINTER(rktio_identity_t)
+
 #RKTIO_EXTERN rktio_identity_t *rktio_fd_identity(rktio_t *rktio, rktio_fd_t *fd);
+capi_rktio_fd_identity = librktio.rktio_fd_identity
+capi_rktio_fd_identity.argtypes = [rktio_p, rktio_fd_p]
+capi_rktio_fd_identity.restype = rktio_identity_p
+capi_rktio_fd_identity.errcheck = check_rktio_ok_t
+def rktio_fd_identity(rktio, fd):
+  out = capi_call("rktio_fd_identity", check_rktio_p(rktio), check_rktio_fd_p(fd))
+  return out.contents
 #RKTIO_EXTERN rktio_identity_t *rktio_path_identity(rktio_t *rktio, rktio_const_string_t path, rktio_bool_t follow_links);
+capi_rktio_path_identity = librktio.rktio_path_identity
+capi_rktio_path_identity.argtypes = [rktio_p, rktio_const_string_t, rktio_bool_t]
+capi_rktio_path_identity.restype = rktio_identity_p
+capi_rktio_path_identity.errcheck = check_rktio_ok_t
+def rktio_path_identity(rktio, path, follow_links: bool = True):
+  out = capi_call("rktio_path_identity", check_rktio_p(rktio), _os.fsencode(path), follow_links)
+  return out.contents
 
 #/*************************************************/
 #/* Permissions                                   */
@@ -2280,35 +2485,137 @@ def rktio_set_file_modify_seconds(rktio, filepath: _os.PathLike, secs: int):
 ##define RKTIO_PERMISSION_READ  0x4
 ##define RKTIO_PERMISSION_WRITE 0x2
 ##define RKTIO_PERMISSION_EXEC  0x1
+class RKTIO_PERMISSION(_enum.IntFlag):
+  READ  = 0x4
+  WRITE = 0x2
+  EXEC  = 0x1
+RKTIO_PERMISSION_READ  = RKTIO_PERMISSION.READ
+RKTIO_PERMISSION_WRITE = RKTIO_PERMISSION.WRITE
+RKTIO_PERMISSION_EXEC  = RKTIO_PERMISSION.EXEC
 
 ##define RKTIO_PERMISSION_ERROR (-1)
+RKTIO_PERMISSION_ERROR = -1
+
+def check_rktio_permission_result(result, *rest):
+  # check_valid(None, result != RKTIO_PERMISSION_ERROR, *rest)
+  check_valid(None, ok(result), *rest)
+  if result == RKTIO_PERMISSION_ERROR:
+    raise ValueError(result)
+  return result
 
 #RKTIO_EXTERN_ERR(RKTIO_PERMISSION_ERROR)
 #int rktio_get_file_or_directory_permissions(rktio_t *rktio, rktio_const_string_t filename, rktio_bool_t all_bits);
 #/* Result is `RKTIO_PERMISSION_ERROR` for error, otherwise a combination of
 #   bits. If not `all_bits`, then use constants above. */
+capi_rktio_get_file_or_directory_permissions = librktio.rktio_get_file_or_directory_permissions
+capi_rktio_get_file_or_directory_permissions.argtypes = [rktio_p, rktio_const_string_t, rktio_bool_t]
+capi_rktio_get_file_or_directory_permissions.restype = rktio_ok_t
+capi_rktio_get_file_or_directory_permissions.errcheck = check_rktio_permission_result
+def rktio_get_file_or_directory_permissions(rktio, filename, all_bits: bool = True):
+  """Result is `RKTIO_PERMISSION_ERROR` for error, otherwise a combination of
+  bits. If not `all_bits`, then use constants above."""
+  out = capi_call("rktio_get_file_or_directory_permissions", check_rktio_p(rktio), _os.fsencode(filename), all_bits)
+  return out
 
 #RKTIO_EXTERN rktio_ok_t rktio_set_file_or_directory_permissions(rktio_t *rktio, rktio_const_string_t filename, int new_bits);
 #/* The `new_bits` format corresponds to `all_bits` for getting permissions.
 #   Can report `RKTIO_ERROR_BAD_PERMISSION` for bits that make no sense. */
+capi_rktio_set_file_or_directory_permissions = librktio.rktio_set_file_or_directory_permissions
+capi_rktio_set_file_or_directory_permissions.argtypes = [rktio_p, rktio_const_string_t, int_t]
+capi_rktio_set_file_or_directory_permissions.restype = rktio_ok_t
+capi_rktio_set_file_or_directory_permissions.errcheck = check_rktio_ok_t
+def rktio_set_file_or_directory_permissions(rktio, filename, new_bits):
+  """The `new_bits` format corresponds to `all_bits` for getting permissions.
+  Can report `RKTIO_ERROR_BAD_PERMISSION` for bits that make no sense."""
+  out = capi_call("rktio_set_file_or_directory_permissions", check_rktio_p(rktio), _os.fsencode(filename), new_bits)
+  return out
 
 #/*************************************************/
 #/* Directory listing                             */
 
 #typedef struct rktio_directory_list_t rktio_directory_list_t;
+class rktio_directory_list_t(_c.Structure):
+  pass
+
+rktio_directory_list_p = _c.POINTER(rktio_directory_list_t)
+
+def check_rktio_directory_list_p(p, *args):
+  return check_type(p, rktio_directory_list_p, "rktio_directory_list_p")
+
+def check_rktio_directory_list_p_or_null(p, *args):
+  return check_type_or_null(p, rktio_directory_list_p, "rktio_directory_list_p")
+
+class RktioDirectoryList(CParameter):
+  def __init__(self, rktio, p):
+    typecheck_or_null(p, rktio_directory_list_p, "rktio_directory_list_p")
+    super().__init__(p)
+    self._rktio = check_rktio_p(rktio)
+
+  def unset(self):
+    super().unset()
+    self._rktio = None
+
+  def __bool__(self):
+    if not self._rktio:
+      return False
+    return super().__bool__()
+
+  def dispose(self):
+    if self:
+      rktio_directory_list_stop(self._rktio, self)
+    super().dispose()
 
 #RKTIO_EXTERN rktio_directory_list_t *rktio_directory_list_start(rktio_t *rktio, rktio_const_string_t dirname);
 #/* On Windows, the given `dirname` must be normalized and not have
 #   `.` or `..`: */
+capi_rktio_directory_list_start = librktio.rktio_directory_list_start
+capi_rktio_directory_list_start.argtypes = [rktio_p, rktio_const_string_t]
+capi_rktio_directory_list_start.restype = rktio_directory_list_p
+capi_rktio_directory_list_start.errcheck = check_rktio_ok_t
+def rktio_directory_list_start(rktio, dirname):
+  """On Windows, the given `dirname` must be normalized and not have
+  `.` or `..`:"""
+  out = capi_call("rktio_directory_list_start", check_rktio_p(rktio), _os.fsencode(dirname))
+  return RktioDirectoryList(rktio, out)
 
 #RKTIO_EXTERN char *rktio_directory_list_step(rktio_t *rktio, rktio_directory_list_t *dl);
 #/* Returns an unallocated "" and deallocates `dl` when the iteration
 #   is complete. A NULL result would mean an error without deallocating
 #   `dl`, but that doesn't currently happen. */
+capi_rktio_directory_list_step = librktio.rktio_directory_list_step
+capi_rktio_directory_list_step.argtypes = [rktio_p, rktio_directory_list_p]
+capi_rktio_directory_list_step.restype = char_p
+capi_rktio_directory_list_step.errcheck = check_rktio_ok_t
+def rktio_directory_list_step(rktio, dl):
+  """Returns an unallocated "" and deallocates `dl` when the iteration
+  is complete. A NULL result would mean an error without deallocating
+  `dl`, but that doesn't currently happen."""
+  out = capi_call("rktio_directory_list_step", check_rktio_p(rktio), check_rktio_directory_list_p(dl))
+  if not out:
+    # dl is now deallocated; ensure its pointer is removed.
+    detach(dl, RktioDirectoryList)
+  else:
+    return _os.fsdecode(out)
 
 #RKTIO_EXTERN void rktio_directory_list_stop(rktio_t *rktio, rktio_directory_list_t *dl);
 #/* Interrupt a directory list in progress, not needed after
 #   `rktio_directory_list_step` returns "": */
+capi_rktio_directory_list_stop = librktio.rktio_directory_list_stop
+capi_rktio_directory_list_stop.argtypes = [rktio_p]
+capi_rktio_directory_list_stop.restype = None
+def rktio_directory_list_stop(rktio, dl):
+  """Interrupt a directory list in progress, not needed after
+  `rktio_directory_list_step` returns "":"""
+  if ok(self := detach(dl, RktioDirectoryList)):
+    dl = self
+  if dl:
+    out = capi_call("rktio_directory_list_stop", check_rktio_p(rktio), check_rktio_directory_list_p(dl))
+    return out
+
+def listdir(rktio, dirname):
+  dl = rktio_directory_list_start(rktio, dirname)
+  while ok(it := rktio_directory_list_step(rktio, dl)):
+    yield it
 
 def check_list_of_strings(out, *rest):
   if out:
@@ -2401,7 +2708,7 @@ def rktio_filesystem_roots(rktio):
 #};
 
 class RKTIO_PATH(_enum.IntEnum):
-  RKTIO_PATH_SYS_DIR    = _enum.auto()
+  RKTIO_PATH_SYS_DIR    = 0
   RKTIO_PATH_TEMP_DIR   = _enum.auto()
   RKTIO_PATH_PREF_DIR   = _enum.auto()
   RKTIO_PATH_PREF_FILE  = _enum.auto()
@@ -2463,7 +2770,7 @@ def rktio_uname(rktio):
   cannot be obtained for some reason, the result is a copy of
   "<unknown machine>"."""
   out = capi_call("rktio_uname", check_rktio_p(rktio))
-  return out
+  return _os.fsdecode(out)
 
 #/*************************************************/
 #/* Sleep and signals                             */
@@ -2666,8 +2973,13 @@ class rktio_date_t(_c.Structure):
       ('day_of_year', int_t),
       ('is_dst', int_t),
       ('zone_offset', int_t),
-      ('zone_name', char_p),
+      ('zone_name_', char_p),
       ]
+
+  @property
+  def zone_name(self) -> str:
+    if ok(it := self.zone_name_):
+      return asutf8(it)
 
 rktio_date_p = _c.POINTER(rktio_date_t)
 
@@ -2748,16 +3060,18 @@ capi_rktio_seconds_to_date = librktio.rktio_seconds_to_date
 capi_rktio_seconds_to_date.argtypes = [rktio_p, rktio_timestamp_t, int_t, int_t]
 capi_rktio_seconds_to_date.restype = rktio_date_p
 capi_rktio_seconds_to_date.errcheck = check_rktio_ok_t
-def rktio_seconds_to_date(rktio, seconds: int, nanoseconds: int, get_gmt: bool = False):
+def rktio_seconds_to_date(rktio, seconds: int, nanoseconds: int, get_gmt: bool = True):
   """A timestamp can be negative to represent a date before 1970."""
   out = capi_call("rktio_seconds_to_date", check_rktio_p(rktio), seconds, nanoseconds, get_gmt)
   return out.contents
 
-def rktio_get_date(rktio, msec: float = None, get_gmt: bool = False):
-  if msec is None:
-    msec = rktio_get_inexact_milliseconds()
-  sec = int(msec // 1000)
-  nsec = int((msec % 1000) * 1e6)
+def rktio_get_date(rktio, seconds: float = None, get_gmt: bool = True):
+  if seconds is None:
+    seconds = rktio_get_inexact_milliseconds() / 1000
+  # sec = int(msec // 1000)
+  # nsec = int((msec % 1000) * 1e6)
+  sec = int(seconds)
+  nsec = int(((seconds * 1000) % 1000) * 1e6)
   return rktio_seconds_to_date(rktio, sec, nsec, get_gmt)
 
 #/*************************************************/

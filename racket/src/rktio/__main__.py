@@ -56,11 +56,12 @@ l2 = listen(None, 4536, 5, 1)
 
 #fd2 = rio.rktio_open(r, "out.txt", rio.RKTIO_OPEN_READ | rio.RKTIO_OPEN_MUST_EXIST | rio.RKTIO_OPEN_TEXT)
 
-rio.rktio_install_os_signal_handler(r)
+# rio.rktio_install_os_signal_handler(r)
 
 it = None
 i = 0
 while True:
+  break
   i += 1
   rio.rktio_wait_until_signal_received(r)
   prev, it = it, rio.rktio_poll_os_signal(r)
