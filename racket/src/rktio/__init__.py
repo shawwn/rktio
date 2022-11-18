@@ -4033,7 +4033,6 @@ def try_check_ltps(rktio,
         return None, None, None
       raise
   #check_expected_racket_error(!h1, RKTIO_ERROR_LTPS_NOT_FOUND)
-  breakpoint()
 
   h1 = rktio_ltps_add(rktio, lt, fd, RKTIO_LTPS_CREATE_READ)
   check_valid(rktio, h1)
