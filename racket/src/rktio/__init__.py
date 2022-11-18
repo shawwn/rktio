@@ -90,7 +90,7 @@ def loadlib(filename, error=False):
 # librktio = _loadlib("librktio.dylib")
 # librktio = librktio or _loadlib("librktio.so")
 # librktio = librktio or _loadlib(".libs/librktio.so", error=True)
-librktio = loadlib("librktio")
+librktio = loadlib("librktio", error=True)
 
 def unwrap(x):
   return getattr(x, "_as_parameter_", x)
