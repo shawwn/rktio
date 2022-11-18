@@ -1960,6 +1960,27 @@ class RktioLtps(CParameter):
       rktio_ltps_close(self._rktio, self)
     super().dispose()
 
+class RktioLtpsHandle(CParameter):
+  def __init__(self, rktio, p):
+    typecheck_or_null(p, rktio_ltps_handle_p, "rktio_ltps_handle_p")
+    super().__init__(p)
+    self._rktio = check_rktio_p(rktio)
+
+  def unset(self):
+    super().unset()
+    self._rktio = None
+
+  def __bool__(self):
+    if not self._rktio:
+      return False
+    return super().__bool__()
+
+  def dispose(self):
+    # TODO: refcount?
+    # if self:
+    #   rktio_ltps_close(self._rktio, self)
+    super().dispose()
+
 
 #RKTIO_EXTERN rktio_ltps_t *rktio_ltps_open(rktio_t *rktio);
 capi_rktio_ltps_open = librktio.rktio_ltps_open
@@ -2037,7 +2058,7 @@ def rktio_ltps_add(rktio, lt, rfd, mode: RKTIO_LTPS):
   or `...REMOVE...` mode that doesn't find the handle reports
   `RKTIO_ERROR_LTPS_NOT_FOUND`."""
   out = capi_call("rktio_ltps_add", check_rktio_p(rktio), check_rktio_ltps_p(lt), check_rktio_fd_p(rfd), int_t(RKTIO_LTPS(mode)))
-  return out
+  return RktioLtpsHandle(out)
 
 #RKTIO_EXTERN void rktio_ltps_handle_set_data(rktio_t *rktio, rktio_ltps_handle_t *h, void *data);
 capi_rktio_ltps_handle_set_data = librktio.rktio_ltps_handle_set_data
@@ -2084,7 +2105,7 @@ capi_rktio_ltps_get_signaled_handle.errcheck = check_rktio_ok_t
 def rktio_ltps_get_signaled_handle(rktio, lt):
   """Free the returned handle when you're done with it."""
   out = capi_call("rktio_ltps_get_signaled_handle", check_rktio_p(rktio), check_rktio_ltps_p(lt))
-  return out
+  return RktioLtpsHandle(out)
 
 #RKTIO_EXTERN void rktio_ltps_handle_set_auto(rktio_t *rktio, rktio_ltps_handle_t *lth, int auto_mode);
 #/* An alternative to receiving the handle via `rktio_ltps_get_signaled_handle`;
