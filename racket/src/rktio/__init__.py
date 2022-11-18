@@ -336,7 +336,7 @@ def rktio_error(result, *rest, rktio=None):
 
 def check_valid(rktio, result, *rest):
   if not result:
-    if result != b'' and result != '':
+    if result != b'' and result != '' and not isinstance(result, _c._Pointer):
       rktio_error(result, *rest, rktio=rktio)
       raise AssertionError("no rktio_error, but result failed", result, *rest)
 
@@ -2088,12 +2088,12 @@ def rktio_ltps_remove_all(rktio, lt):
 #RKTIO_EXTERN rktio_ok_t rktio_ltps_poll(rktio_t *rktio, rktio_ltps_t *lt);
 #/* Enqueues signaled handles for retreival via `rktio_ltps_get_signaled_handle`.  */
 capi_rktio_ltps_poll = librktio.rktio_ltps_poll
-capi_rktio_ltps_poll.argtypes = [rktio_p]
+capi_rktio_ltps_poll.argtypes = [rktio_p, rktio_ltps_p]
 capi_rktio_ltps_poll.restype = rktio_ok_t
 capi_rktio_ltps_poll.errcheck = check_rktio_ok_t
-def rktio_ltps_poll(rktio):
+def rktio_ltps_poll(rktio, lt):
   """Enqueues signaled handles for retreival via `rktio_ltps_get_signaled_handle`."""
-  out = capi_call("rktio_ltps_poll", check_rktio_p(rktio))
+  out = capi_call("rktio_ltps_poll", check_rktio_p(rktio), check_rktio_ltps_p(lt))
   return out
 
 #RKTIO_EXTERN rktio_ltps_handle_t *rktio_ltps_get_signaled_handle(rktio_t *rktio, rktio_ltps_t *lt);
@@ -3963,7 +3963,7 @@ def check_ltps_read_and_write_ready(rktio, lt, h1, h2):
 import contextlib
 
 @contextlib.contextmanager
-def with_expected_racket_error(rktio, code: RKTIO_ERROR):
+def with_expected_racket_error(rktio, code: RKTIO_ERROR, required=False):
   try:
     yield
   except RktioException as e:
@@ -3972,7 +3972,7 @@ def with_expected_racket_error(rktio, code: RKTIO_ERROR):
     errid, kind, step = it
     if errid != code:
       raise RuntimeError("Unexpected error", (errid, kind, step))
-  else:
+  elif required:
     raise RuntimeError("Expected error", code)
 
 def try_check_ltps(rktio,
