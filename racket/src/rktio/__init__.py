@@ -53,8 +53,10 @@ def abspath(filepath, directory=None):
   if not ok(directory):
     directory = _os.getcwd()
   filepath = _path.normpath(filepath)
+  directory = _path.abspath(directory)
+  filepath = _path.join(directory, filepath)
   filepath = _path.abspath(filepath)
-  return _path.relpath(filepath, directory)
+  return filepath
 
 def which(filepath):
   if ok(it := shutil.which(filepath)):
@@ -69,13 +71,12 @@ def resolve(filepath, directories):
   for directory in directories:
     if ok(it := which(abspath(filepath, directory=directory))):
       return it
-    fullpath = abspath(filepath, directory=_path.dirname(__file__))
 
 def whichlib(filepath):
   directories = []
   for directory in [_path.dirname(__file__), _os.getcwd()] + _os.environ["PATH"].split(_os.pathsep):
     for subdir in ["", ".libs"]:
-      directories.append(_path.join(directory, subdir, filepath))
+      directories.append(_path.join(directory, subdir))
   return resolve(filepath, directories)
 
 
