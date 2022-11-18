@@ -50,7 +50,7 @@ rfd = importfd(server)
 
 l = rio.rktio_listener_alloc(server.fileno(), server.fileno())
 
-l2 = listen(None, 4536, 5, 1)
+l2 = listen(None, int(os.environ.get("PORT", "4536")), 5, 1)
 
 
 #fd = rio.rktio_open(r, "foo.txt", rio.RKTIO_OPEN_READ | rio.RKTIO_OPEN_MUST_EXIST | rio.RKTIO_OPEN_TEXT)
@@ -80,4 +80,3 @@ while True:
 rio.rktio_clear_error(r)
 
 # rio.rktio_destroy(r)
-os.exit(0)
