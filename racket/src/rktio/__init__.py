@@ -717,9 +717,9 @@ def rktio_close(rktio: rktio_p, fd: rktio_fd_p):
   #     res = check_rktio_ok_t(ret)
   #     rktio__fd_on_close(fd)
   #     return res
-  if ok(self := detach(fd, RktioFd)):
-    fd = self
   if rktio and fd:
+    if ok(self := detach(fd, RktioFd)):
+      fd = self
     ret = capi_call("capi_rktio_close", check_rktio_p(rktio), check_rktio_fd_p(fd))
     rktio__fd_on_close(fd)
     return ret
