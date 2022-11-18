@@ -80,7 +80,7 @@ def whichlib(filepath):
   return resolve(filepath, directories)
 
 
-def loadlib(filename, error=False):
+def loadlib(filename, error=True):
   filename = whichlib(filename) or filename
   try:
     return _c.cdll.LoadLibrary(filename)
@@ -91,7 +91,7 @@ def loadlib(filename, error=False):
 # librktio = _loadlib("librktio.dylib")
 # librktio = librktio or _loadlib("librktio.so")
 # librktio = librktio or _loadlib(".libs/librktio.so", error=True)
-librktio = loadlib("librktio", error=True)
+librktio = loadlib("librktio")
 
 def unwrap(x):
   return getattr(x, "_as_parameter_", x)
