@@ -74,7 +74,7 @@ def resolve(filepath, directories):
 
 def whichlib(filepath):
   directories = []
-  for directory in [_path.dirname(__file__), _os.getcwd()] + _os.environ["PATH"].split(_os.pathsep):
+  for directory in [_path.join(_path.dirname(__file__), "..", "..", "racket", "src", "rktio"), _os.getcwd()] + _os.environ["PATH"].split(_os.pathsep):
     for subdir in ["", ".libs"]:
       directories.append(_path.join(directory, subdir))
   return resolve(filepath, directories)
