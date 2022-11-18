@@ -88,9 +88,6 @@ def loadlib(filename, error=True):
     if error:
       raise
 
-# librktio = _loadlib("librktio.dylib")
-# librktio = librktio or _loadlib("librktio.so")
-# librktio = librktio or _loadlib(".libs/librktio.so", error=True)
 librktio = loadlib("librktio")
 
 def unwrap(x):
