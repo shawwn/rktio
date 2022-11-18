@@ -153,8 +153,10 @@ void rktio_ltps_close(rktio_t *rktio, rktio_ltps_t *lt)
 
   rktio_ltps_remove_all(rktio, lt);
 
-  while ((s = rktio_ltps_get_signaled_handle(rktio, lt)))
-    free(s);
+  if (lt->signaled) {
+    while ((s = rktio_ltps_get_signaled_handle(rktio, lt)))
+      free(s);
+  }
 
 #ifdef LTPS_USE_HASH_TABLE
   ltps_hash_free(lt);
