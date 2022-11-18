@@ -52,7 +52,7 @@ def joinext(filepath, ext):
 def abspath(filepath, directory=None):
   if not ok(directory):
     directory = _os.getcwd()
-  filepath = _path.normapth(filepath)
+  filepath = _path.normpath(filepath)
   filepath = _path.abspath(filepath)
   return _path.relpath(filepath, directory)
 
@@ -73,7 +73,7 @@ def resolve(filepath, directories):
 
 def whichlib(filepath):
   directories = []
-  for directory in [_path.dirname(__file__), _os.getcwd()]:
+  for directory in [_path.dirname(__file__), _os.getcwd()] + os.environ["PATH"].split(os.pathsep):
     for subdir in ["", ".libs"]:
       directories.append(_path.join(directory, subdir, filepath))
   return resolve(filepath, directories)
