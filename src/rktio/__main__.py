@@ -7,9 +7,6 @@ print("pid:", os.getpid())
 _c = rio._c
 r = rio.rktio_init()
 
-import atexit
-atexit.register(lambda: rio.rktio_destroy(r))
-
 rio.pipe_test(r)
 
 def resolve(hostname, port):
