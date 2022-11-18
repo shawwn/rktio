@@ -375,7 +375,8 @@ def check_valid(rktio, result, *rest):
   if not result:
     if result != b'' and result != '' and not isinstance(result, _c._Pointer):
       rktio_error(result, *rest, rktio=rktio)
-      raise AssertionError("no rktio_error, but result failed", result, *rest)
+      if result is not None:
+        raise AssertionError("no rktio_error, but result failed", result, *rest)
 
 
 def check_rktio_ok_t(result, *rest):
@@ -2016,7 +2017,7 @@ class RktioLtpsHandle(CParameter):
   def dispose(self):
     # TODO: refcount?
     # if self:
-    #   rktio_ltps_close(self._rktio, self)
+    #   rktio_free(self._rktio, self)
     super().dispose()
 
 
