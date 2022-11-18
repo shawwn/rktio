@@ -2037,6 +2037,7 @@ def rktio_ltps_open(rktio):
 capi_rktio_ltps_close = librktio.rktio_ltps_close
 capi_rktio_ltps_close.argtypes = [rktio_p, rktio_ltps_p]
 capi_rktio_ltps_close.restype = None
+capi_rktio_ltps_close.errcheck = check_rktio_ok_t
 def rktio_ltps_close(rktio, ltps):
   if ok(self := detach(ltps, RktioLtps)):
     ltps = self
