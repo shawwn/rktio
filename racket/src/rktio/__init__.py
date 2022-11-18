@@ -4006,7 +4006,7 @@ def with_expected_racket_error(rktio, code: RKTIO_ERROR, required=False):
     yield
   except RktioException as e:
     exn = e
-    if errid != exn.code:
+    if code != exn.code:
       raise
   if it := rktio_clear_error(rktio):
     errid, kind, step = it
