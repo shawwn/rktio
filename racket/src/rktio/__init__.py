@@ -190,6 +190,8 @@ class CParameter:
   def __eq__(self, rhs):
     if unwrap(self) == unwrap(rhs):
       return True
+    if address(unwrap(self)) == address(unwrap(rhs)):
+      return True
     if (not self) == (not rhs):
       return True
     return False
