@@ -77,3 +77,4 @@ while True:
 rio.rktio_clear_error(r)
 
 # rio.rktio_destroy(r)
+os.exit(0)
