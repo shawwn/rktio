@@ -367,6 +367,7 @@ def rktio_error(result, *rest, rktio=None):
     func, args = rest
     rktio = args[0]
   if err := rktio_check_error(rktio, result, *rest):
+    rktio_clear_error(rktio)
     raise err
 
 def check_valid(rktio, result, *rest):
