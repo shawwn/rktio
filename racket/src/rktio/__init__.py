@@ -8,11 +8,15 @@ import errno
 import socket
 import itertools
 import dataclasses
+import shutil
 from typing import *
 try:
   from typing import Literal
 except ImportError:
   from typing_extensions import Literal
+
+def ok(x):
+  return x is not None
 
 def make_posix_errno():
   ns = _enum.EnumMeta.__prepare__('POSIX_ERRNO', (_enum.IntEnum,))
@@ -41,19 +45,52 @@ char_p = _c.c_char_p
 rktio_bool_t = bool_t
 rktio_int64_t = _c.c_int64
 
-def _loadlib(filename, error=False):
-   try:
-     return _c.cdll.LoadLibrary(_path.join(_path.dirname(__file__), filename))
-   except OSError:
-     if error:
-       raise
+def joinext(filepath, ext):
+  base, tail = _os.path.splitext(filepath)
+  return base + ext
 
-librktio = _loadlib("librktio.dylib")
-librktio = librktio or _loadlib("librktio.so")
-librktio = librktio or _loadlib(".libs/librktio.so", error=True)
+def abspath(filepath, directory=None):
+  if not ok(directory):
+    directory = _os.getcwd()
+  filepath = _path.normapth(filepath)
+  filepath = _path.abspath(filepath)
+  return _path.relpath(filepath, directory)
 
-def ok(x):
-  return x is not None
+def which(filepath):
+  if ok(it := shutil.which(filepath)):
+    return it
+  for ext in ["", ".so", ".dylib", ".dll"]:
+    if ok(it := shutil.which(joinext(filepath, ext))):
+      return it
+
+def resolve(filepath, directories):
+  if ok(it := which(filepath)):
+    return it
+  for directory in directories:
+    if ok(it := which(abspath(filepath, directory=directory))):
+      return it
+    fullpath = abspath(filepath, directory=_path.dirname(__file__))
+
+def whichlib(filepath):
+  directories = []
+  for directory in [_path.dirname(__file__), _os.getcwd()]:
+    for subdir in ["", ".libs"]:
+      directories.append(_path.join(directory, subdir, filepath))
+  return resolve(filepath, directories)
+
+
+def loadlib(filename, error=False):
+  filename = whichlib(filename) or filename
+  try:
+    return _c.cdll.LoadLibrary(filename)
+  except OSError:
+    if error:
+      raise
+
+# librktio = _loadlib("librktio.dylib")
+# librktio = librktio or _loadlib("librktio.so")
+# librktio = librktio or _loadlib(".libs/librktio.so", error=True)
+librktio = loadlib("librktio")
 
 def unwrap(x):
   return getattr(x, "_as_parameter_", x)
@@ -342,6 +379,7 @@ def check_valid(rktio, result, *rest):
 
 
 def check_rktio_ok_t(result, *rest):
+  rktio_error(result, *rest)
   check_valid(None, result, *rest)
   return result
 
@@ -3967,7 +4005,9 @@ def with_expected_racket_error(rktio, code: RKTIO_ERROR, required=False):
   try:
     yield
   except RktioException as e:
-    pass
+    exn = e
+    if errid != exn.code:
+      raise
   if it := rktio_clear_error(rktio):
     errid, kind, step = it
     if errid != code:
