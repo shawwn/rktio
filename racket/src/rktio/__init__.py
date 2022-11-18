@@ -2058,7 +2058,7 @@ def rktio_ltps_add(rktio, lt, rfd, mode: RKTIO_LTPS):
   or `...REMOVE...` mode that doesn't find the handle reports
   `RKTIO_ERROR_LTPS_NOT_FOUND`."""
   out = capi_call("rktio_ltps_add", check_rktio_p(rktio), check_rktio_ltps_p(lt), check_rktio_fd_p(rfd), int_t(RKTIO_LTPS(mode)))
-  return RktioLtpsHandle(out)
+  return RktioLtpsHandle(rktio, out)
 
 #RKTIO_EXTERN void rktio_ltps_handle_set_data(rktio_t *rktio, rktio_ltps_handle_t *h, void *data);
 capi_rktio_ltps_handle_set_data = librktio.rktio_ltps_handle_set_data
@@ -2105,7 +2105,7 @@ capi_rktio_ltps_get_signaled_handle.errcheck = check_rktio_ok_t
 def rktio_ltps_get_signaled_handle(rktio, lt):
   """Free the returned handle when you're done with it."""
   out = capi_call("rktio_ltps_get_signaled_handle", check_rktio_p(rktio), check_rktio_ltps_p(lt))
-  return RktioLtpsHandle(out)
+  return RktioLtpsHandle(rktio, out)
 
 #RKTIO_EXTERN void rktio_ltps_handle_set_auto(rktio_t *rktio, rktio_ltps_handle_t *lth, int auto_mode);
 #/* An alternative to receiving the handle via `rktio_ltps_get_signaled_handle`;
