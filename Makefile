@@ -6,9 +6,9 @@ clean:
 	@cd racket/src/rktio && make clean
 
 racket/src/rktio/Makefile:
+	@./build.sh
 
 configure: racket/src/rktio/Makefile
-	@./build.sh
 
 test: configure
 	@PYTHONPATH=src python3 -m rktio
