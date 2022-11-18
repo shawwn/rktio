@@ -60,7 +60,11 @@ OBJS = rktio_fs.@LTO@ \
        rktio_console.@LTO@ \
        rktio_main.@LTO@
 
-all: rktio_demo librktio.a librktio.@LIBSFX@
+dll: librktio.@LIBSFX@
+
+lib: librktio.a
+
+all: dll rktio_demo
 
 test: all
 	@./rktio_demo -v
